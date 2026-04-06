@@ -1,0 +1,23 @@
+name: Syntroper Diagrams
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  diagrams:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: syntroper/github-diagram-action@v1
+        with:
+          token: ${{ secrets.SYNTROPER_TOKEN }}
+          paths: |
+            README.md
+            docs/**/*.md
+          rewrite_mode: managed_blocks
+          commit_changes: "false"

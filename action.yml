@@ -1,0 +1,40 @@
+name: "Syntroper Diagrams"
+description: "Render Mermaid and PlantUML blocks to Syntroper-hosted diagram images and interactive links"
+author: "Syntroper"
+
+branding:
+  icon: "image"
+  color: "blue"
+
+inputs:
+  token:
+    description: "Syntroper API token"
+    required: true
+  paths:
+    description: "Newline-separated glob patterns to scan"
+    required: false
+    default: |
+      README.md
+      docs/**/*.md
+  rewrite_mode:
+    description: "managed_blocks or check_only"
+    required: false
+    default: "managed_blocks"
+  commit_changes:
+    description: "Whether to commit generated README/doc changes"
+    required: false
+    default: "false"
+  commit_message:
+    description: "Commit message when commit_changes=true"
+    required: false
+    default: "chore: update Syntroper diagrams"
+
+outputs:
+  changed:
+    description: "true if files were changed"
+  diagrams_found:
+    description: "Number of diagrams detected"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"

@@ -1,0 +1,5 @@
+version: 1
+paths:
+  - README.md
+  - docs/**/*.md
+rewrite_mode: managed_blocks
