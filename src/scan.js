@@ -1,3 +1,18 @@
+/**
+ * scan.js — Finds markdown files and extracts fenced diagram blocks.
+ *
+ * Uses fast-glob to match file patterns, then applies a regex to find
+ * fenced code blocks with supported diagram language tags.
+ *
+ * Supported fence tags (defined in constants.js FENCE_TAG_MAP):
+ *   mermaid, plantuml, puml, ditaa, ascii
+ *
+ * Each detected block includes:
+ *   - engine:        Canonical engine name (e.g. "puml" → "plantuml")
+ *   - source:        Raw diagram source text
+ *   - originalMatch: Full matched string (for replacement later)
+ *   - start/end:     Character positions in the file
+ */
 const fs = require("fs/promises");
 const fg = require("fast-glob");
 const { FENCE_TAG_MAP } = require("./constants");

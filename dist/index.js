@@ -35134,6 +35134,23 @@ module.exports.promise = queueAsPromised
 /***/ 5922:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * canonicalize.js — Normalizes diagram source to produce stable hashes.
+ *
+ * Problem: Whitespace-only edits (trailing spaces, blank lines, CRLF vs LF)
+ * would produce different hashes and create duplicate diagram entries.
+ *
+ * Solution: Conservative canonicalization that only removes formatting-only
+ * differences we are confident do not affect diagram output:
+ *   - CRLF → LF
+ *   - Trailing whitespace on each line
+ *   - Multiple consecutive blank lines → single blank line
+ *   - Leading/trailing blank lines trimmed
+ *
+ * Important: We intentionally do NOT normalize indentation inside content,
+ * reorder statements, strip comments, or modify anything inside quoted strings.
+ * Those changes could alter diagram semantics.
+ */
 const { CANONICALIZER_VERSION } = __nccwpck_require__(4201);
 
 function normalizeNewlines(text) {
@@ -35168,14 +35185,23 @@ module.exports = { canonicalizeDiagram, CANONICALIZER_VERSION };
 /***/ 4201:
 /***/ ((module) => {
 
+/**
+ * constants.js — Shared constants and configuration.
+ *
+ * ENGINE_* constants are the canonical engine names used internally.
+ * FENCE_TAG_MAP maps markdown fence language tags to canonical engine names
+ * (e.g. "dot" and "neato" both map to "graphviz").
+ *
+ * To add a new diagram type:
+ *   1. Add an ENGINE_* constant
+ *   2. Add the fence tag(s) to FENCE_TAG_MAP
+ *   3. The Syntroper API handles rendering — no client-side changes needed
+ */
 module.exports = {
   ENGINE_MERMAID: "mermaid",
   ENGINE_PLANTUML: "plantuml",
   ENGINE_DITAA: "ditaa",
-  ENGINE_D2: "d2",
-  ENGINE_GRAPHVIZ: "graphviz",
   ENGINE_ASCII: "ascii",
-  ENGINE_SVGBOB: "svgbob",
   REWRITE_MANAGED_BLOCKS: "managed_blocks",
   REWRITE_CHECK_ONLY: "check_only",
   CANONICALIZER_VERSION: "1",
@@ -35186,12 +35212,7 @@ module.exports = {
     plantuml: "plantuml",
     puml: "plantuml",
     ditaa: "ditaa",
-    d2: "d2",
-    dot: "graphviz",
-    graphviz: "graphviz",
-    neato: "graphviz",
-    ascii: "ascii",
-    svgbob: "svgbob"
+    ascii: "ascii"
   }
 };
 
@@ -35201,6 +35222,19 @@ module.exports = {
 /***/ 7556:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * git.js — Optional git commit/push helper.
+ *
+ * When the action input commit_changes=true, this module commits the
+ * rewritten markdown files and pushes them back to the repository.
+ *
+ * Uses the standard github-actions[bot] user identity so commits
+ * are attributed to the bot, not a human user.
+ *
+ * This is opt-in — many users prefer to have the action only modify
+ * files in the working directory and handle committing themselves
+ * (e.g. via a separate step or a PR-based workflow).
+ */
 const { execFile } = __nccwpck_require__(1421);
 const { promisify } = __nccwpck_require__(7975);
 const execFileAsync = promisify(execFile);
@@ -35232,6 +35266,27 @@ module.exports = { maybeCommitChanges };
 /***/ 4770:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * hashes.js — Generates three-level identity hashes for diagrams.
+ *
+ * Three hash levels serve different purposes:
+ *
+ *   1. rawSourceHash:  SHA-256 of the canonicalized source text.
+ *      Used for exact source tracking and provenance.
+ *
+ *   2. canonicalHash:  SHA-256 of { engine + canonicalSource }.
+ *      Used as the primary diagram identity key for deduplication.
+ *      Same diagram in different repos → same canonicalHash.
+ *
+ *   3. renderHash:     SHA-256 of { engine + canonicalHash + renderConfig }.
+ *      Used as the asset cache key for generated images.
+ *      Same diagram with different theme/renderer version → different renderHash.
+ *
+ * This means:
+ *   - Whitespace-only edits don't create new diagram IDs
+ *   - Renderer upgrades only invalidate render assets, not diagram identity
+ *   - Cross-repo dedup works via canonicalHash
+ */
 const crypto = __nccwpck_require__(6982);
 
 function sha256(value) {
@@ -35267,6 +35322,20 @@ module.exports = { makeHashes, sha256 };
 /***/ 1899:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * inputs.js — Reads and validates GitHub Action inputs.
+ *
+ * Inputs are defined in action.yml and provided by users in their workflow YAML.
+ * This module parses them into a clean object used by index.js.
+ *
+ * Inputs:
+ *   - api_url:        Syntroper API endpoint URL (required)
+ *   - token:          Syntroper API token (optional, for auth)
+ *   - paths:          Newline-separated glob patterns for markdown files to scan
+ *   - rewrite_mode:   "managed_blocks" (replace diagrams) or "check_only" (upload only)
+ *   - commit_changes: Whether to git commit/push modified files
+ *   - commit_message: Custom commit message
+ */
 const core = __nccwpck_require__(7484);
 
 function splitLines(value) {
@@ -35277,13 +35346,14 @@ function splitLines(value) {
 }
 
 function getInputs() {
-  const token = core.getInput("token", { required: true });
+  const apiUrl = core.getInput("api_url", { required: true });
+  const token = core.getInput("token") || "";
   const paths = splitLines(core.getInput("paths"));
   const rewriteMode = core.getInput("rewrite_mode") || "managed_blocks";
   const commitChanges = (core.getInput("commit_changes") || "false") === "true";
   const commitMessage = core.getInput("commit_message") || "chore: update Syntroper diagrams";
 
-  return { token, paths, rewriteMode, commitChanges, commitMessage };
+  return { apiUrl, token, paths, rewriteMode, commitChanges, commitMessage };
 }
 
 module.exports = { getInputs };
@@ -35294,6 +35364,12 @@ module.exports = { getInputs };
 /***/ 5178:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * logger.js — Thin logging wrappers over @actions/core.
+ *
+ * Centralizes log calls so we can control formatting in one place.
+ * In GitHub Actions, these appear in the workflow run log output.
+ */
 const core = __nccwpck_require__(7484);
 
 function info(message) {
@@ -35312,6 +35388,24 @@ module.exports = { info, warning };
 /***/ 3906:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * markdown-rewrite.js — Replaces diagram code blocks with managed image blocks.
+ *
+ * After the Syntroper API returns an imageUrl for each diagram, this module
+ * replaces the original fenced code block (e.g. ```mermaid...```) with a
+ * managed block that contains:
+ *
+ *   <!-- syntroper:start -->
+ *   [![Diagram](imageUrl)](interactiveUrl)
+ *   Open interactive version on Syntroper.
+ *   <!-- syntroper:diagram canonical=... render=... id=... engine=... -->
+ *   <!-- syntroper:end -->
+ *
+ * The HTML comments serve as metadata markers that:
+ *   - The browser extension can detect for inline interactive rendering
+ *   - The action can detect on re-runs to update existing blocks (TODO)
+ *   - Provide provenance (hashes, engine, diagram ID)
+ */
 const fs = __nccwpck_require__(1943);
 
 function makeManagedBlock(block) {
@@ -35353,6 +35447,21 @@ module.exports = { rewriteMarkdownFile, makeManagedBlock };
 /***/ 9355:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * scan.js — Finds markdown files and extracts fenced diagram blocks.
+ *
+ * Uses fast-glob to match file patterns, then applies a regex to find
+ * fenced code blocks with supported diagram language tags.
+ *
+ * Supported fence tags (defined in constants.js FENCE_TAG_MAP):
+ *   mermaid, plantuml, puml, ditaa, ascii
+ *
+ * Each detected block includes:
+ *   - engine:        Canonical engine name (e.g. "puml" → "plantuml")
+ *   - source:        Raw diagram source text
+ *   - originalMatch: Full matched string (for replacement later)
+ *   - start/end:     Character positions in the file
+ */
 const fs = __nccwpck_require__(1943);
 const fg = __nccwpck_require__(5648);
 const { FENCE_TAG_MAP } = __nccwpck_require__(4201);
@@ -35398,40 +35507,50 @@ module.exports = { scanFiles, BLOCK_RE };
 /***/ 4861:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+/**
+ * syntroper-api.js — Handles all communication with the Syntroper backend.
+ *
+ * Sends diagram source code to the Syntroper API for rendering.
+ * The API is responsible for rendering all diagram types (mermaid, plantuml,
+ * ditaa, ascii) server-side and returning a hosted image URL.
+ *
+ * Request:
+ *   POST <api_url>
+ *   Body: { "code": "<diagram source>" }
+ *
+ * Response:
+ *   {
+ *     "success": true,
+ *     "diagram_id": "...",
+ *     "image_url": "https://...png",
+ *     "diagram_type": "flowchart",
+ *     "title": "My Flow"
+ *   }
+ *
+ * The image_url is what gets embedded in the rewritten markdown.
+ * The action does NOT render diagrams itself — Syntroper handles that.
+ */
 const { info } = __nccwpck_require__(5178);
 
-const API_BASE = "https://api.syntroper.com/v1";
-
 async function uploadDiagram({
+  apiUrl,
   token,
   engine,
   rawSource,
   canonicalSource,
-  hashes,
-  filePath,
-  repository,
-  commitSha
+  hashes
 }) {
   info(`Uploading diagram (engine=${engine}, canonical=${hashes.canonicalHash.slice(0, 12)}…)`);
 
-  const response = await fetch(`${API_BASE}/diagrams/upsert`, {
+  const headers = { "content-type": "application/json" };
+  if (token) {
+    headers["authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(apiUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "authorization": `Bearer ${token}`
-    },
-    body: JSON.stringify({
-      engine,
-      rawSource,
-      canonicalSource,
-      canonicalHash: hashes.canonicalHash,
-      renderHash: hashes.renderHash,
-      source: {
-        repository,
-        filePath,
-        commitSha
-      }
-    })
+    headers,
+    body: JSON.stringify({ code: canonicalSource })
   });
 
   if (!response.ok) {
@@ -35439,8 +35558,18 @@ async function uploadDiagram({
     throw new Error(`Syntroper API error ${response.status}: ${text}`);
   }
 
-  // Expected response: { diagramId, imageUrl, interactiveUrl }
-  return response.json();
+  const data = await response.json();
+
+  if (!data.success) {
+    throw new Error(`Syntroper API returned success=false: ${JSON.stringify(data)}`);
+  }
+
+  // Map API response fields to what the rest of the action expects
+  return {
+    diagramId: data.diagram_id,
+    imageUrl: data.image_url,
+    interactiveUrl: data.image_url
+  };
 }
 
 module.exports = { uploadDiagram };
@@ -35487,6 +35616,19 @@ module.exports = { uploadDiagram };
 /******/ 	
 /************************************************************************/
 var __webpack_exports__ = {};
+/**
+ * index.js — Main orchestrator for the Syntroper GitHub Action.
+ *
+ * This is the entrypoint that GitHub Actions runs (via dist/index.js).
+ * It wires together all modules in sequence:
+ *   1. Read action inputs (token, paths, rewrite_mode, etc.)
+ *   2. Scan markdown files for fenced diagram blocks
+ *   3. Canonicalize each diagram source (normalize whitespace)
+ *   4. Generate canonical + render hashes for identity/caching
+ *   5. Upload diagram source to Syntroper API → get back imageUrl
+ *   6. Rewrite markdown files with image links + metadata markers
+ *   7. Optionally commit and push the changes
+ */
 const core = __nccwpck_require__(7484);
 const { getInputs } = __nccwpck_require__(1899);
 const { scanFiles } = __nccwpck_require__(9355);
@@ -35522,14 +35664,12 @@ async function run() {
         });
 
         const uploaded = await uploadDiagram({
+          apiUrl: inputs.apiUrl,
           token: inputs.token,
           engine: block.engine,
           rawSource: block.source,
           canonicalSource: canonical,
-          hashes,
-          filePath: file.path,
-          repository: process.env.GITHUB_REPOSITORY || "",
-          commitSha: process.env.GITHUB_SHA || ""
+          hashes
         });
 
         block.rendered = {

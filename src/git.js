@@ -1,3 +1,16 @@
+/**
+ * git.js — Optional git commit/push helper.
+ *
+ * When the action input commit_changes=true, this module commits the
+ * rewritten markdown files and pushes them back to the repository.
+ *
+ * Uses the standard github-actions[bot] user identity so commits
+ * are attributed to the bot, not a human user.
+ *
+ * This is opt-in — many users prefer to have the action only modify
+ * files in the working directory and handle committing themselves
+ * (e.g. via a separate step or a PR-based workflow).
+ */
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const execFileAsync = promisify(execFile);

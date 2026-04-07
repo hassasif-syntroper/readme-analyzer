@@ -1,37 +1,47 @@
+/**
+ * syntroper-api.js — Handles all communication with the Syntroper backend.
+ *
+ * Sends diagram source code to the Syntroper API for rendering.
+ * The API is responsible for rendering all diagram types (mermaid, plantuml,
+ * ditaa, ascii) server-side and returning a hosted image URL.
+ *
+ * Request:
+ *   POST <api_url>
+ *   Body: { "code": "<diagram source>" }
+ *
+ * Response:
+ *   {
+ *     "success": true,
+ *     "diagram_id": "...",
+ *     "image_url": "https://...png",
+ *     "diagram_type": "flowchart",
+ *     "title": "My Flow"
+ *   }
+ *
+ * The image_url is what gets embedded in the rewritten markdown.
+ * The action does NOT render diagrams itself — Syntroper handles that.
+ */
 const { info } = require("./logger");
 
-const API_BASE = "https://api.syntroper.com/v1";
-
 async function uploadDiagram({
+  apiUrl,
   token,
   engine,
   rawSource,
   canonicalSource,
-  hashes,
-  filePath,
-  repository,
-  commitSha
+  hashes
 }) {
   info(`Uploading diagram (engine=${engine}, canonical=${hashes.canonicalHash.slice(0, 12)}…)`);
 
-  const response = await fetch(`${API_BASE}/diagrams/upsert`, {
+  const headers = { "content-type": "application/json" };
+  if (token) {
+    headers["authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(apiUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "authorization": `Bearer ${token}`
-    },
-    body: JSON.stringify({
-      engine,
-      rawSource,
-      canonicalSource,
-      canonicalHash: hashes.canonicalHash,
-      renderHash: hashes.renderHash,
-      source: {
-        repository,
-        filePath,
-        commitSha
-      }
-    })
+    headers,
+    body: JSON.stringify({ code: canonicalSource })
   });
 
   if (!response.ok) {
@@ -39,8 +49,18 @@ async function uploadDiagram({
     throw new Error(`Syntroper API error ${response.status}: ${text}`);
   }
 
-  // Expected response: { diagramId, imageUrl, interactiveUrl }
-  return response.json();
+  const data = await response.json();
+
+  if (!data.success) {
+    throw new Error(`Syntroper API returned success=false: ${JSON.stringify(data)}`);
+  }
+
+  // Map API response fields to what the rest of the action expects
+  return {
+    diagramId: data.diagram_id,
+    imageUrl: data.image_url,
+    interactiveUrl: data.image_url
+  };
 }
 
 module.exports = { uploadDiagram };

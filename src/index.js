@@ -1,3 +1,16 @@
+/**
+ * index.js — Main orchestrator for the Syntroper GitHub Action.
+ *
+ * This is the entrypoint that GitHub Actions runs (via dist/index.js).
+ * It wires together all modules in sequence:
+ *   1. Read action inputs (token, paths, rewrite_mode, etc.)
+ *   2. Scan markdown files for fenced diagram blocks
+ *   3. Canonicalize each diagram source (normalize whitespace)
+ *   4. Generate canonical + render hashes for identity/caching
+ *   5. Upload diagram source to Syntroper API → get back imageUrl
+ *   6. Rewrite markdown files with image links + metadata markers
+ *   7. Optionally commit and push the changes
+ */
 const core = require("@actions/core");
 const { getInputs } = require("./inputs");
 const { scanFiles } = require("./scan");
@@ -33,14 +46,12 @@ async function run() {
         });
 
         const uploaded = await uploadDiagram({
+          apiUrl: inputs.apiUrl,
           token: inputs.token,
           engine: block.engine,
           rawSource: block.source,
           canonicalSource: canonical,
-          hashes,
-          filePath: file.path,
-          repository: process.env.GITHUB_REPOSITORY || "",
-          commitSha: process.env.GITHUB_SHA || ""
+          hashes
         });
 
         block.rendered = {

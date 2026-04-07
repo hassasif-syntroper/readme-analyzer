@@ -7,9 +7,13 @@ branding:
   color: "blue"
 
 inputs:
+  api_url:
+    description: "Syntroper API endpoint URL"
+    required: true
   token:
     description: "Syntroper API token"
-    required: true
+    required: false
+    default: ""
   paths:
     description: "Newline-separated glob patterns to scan"
     required: false

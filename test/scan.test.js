@@ -96,34 +96,6 @@ describe("block extraction", () => {
     assert.equal(blocks[0].engine, "ditaa");
   });
 
-  it("detects a d2 block", () => {
-    const md = '```d2\nx -> y: hello\n```';
-    const blocks = extractBlocks(md);
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0].engine, "d2");
-  });
-
-  it("detects a graphviz block", () => {
-    const md = '```graphviz\ndigraph { A -> B }\n```';
-    const blocks = extractBlocks(md);
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0].engine, "graphviz");
-  });
-
-  it("normalizes dot to graphviz", () => {
-    const md = '```dot\ndigraph { A -> B }\n```';
-    const blocks = extractBlocks(md);
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0].engine, "graphviz");
-  });
-
-  it("normalizes neato to graphviz", () => {
-    const md = '```neato\ngraph { A -- B }\n```';
-    const blocks = extractBlocks(md);
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0].engine, "graphviz");
-  });
-
   it("detects an ascii block", () => {
     const md = '```ascii\n+--+\n|Hi|\n+--+\n```';
     const blocks = extractBlocks(md);
@@ -131,25 +103,18 @@ describe("block extraction", () => {
     assert.equal(blocks[0].engine, "ascii");
   });
 
-  it("detects a svgbob block", () => {
-    const md = '```svgbob\n  .---.\n  | A |\n  \'---\'\n```';
-    const blocks = extractBlocks(md);
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0].engine, "svgbob");
-  });
-
   it("detects mixed diagram types", () => {
     const md = [
       "```mermaid", "graph TD", "  A --> B", "```",
       "",
-      "```d2", "x -> y", "```",
+      "```ascii", "+--+", "|Hi|", "+--+", "```",
       "",
       "```ditaa", "+--+", "|Hi|", "+--+", "```"
     ].join("\n");
     const blocks = extractBlocks(md);
     assert.equal(blocks.length, 3);
     assert.equal(blocks[0].engine, "mermaid");
-    assert.equal(blocks[1].engine, "d2");
+    assert.equal(blocks[1].engine, "ascii");
     assert.equal(blocks[2].engine, "ditaa");
   });
 });
