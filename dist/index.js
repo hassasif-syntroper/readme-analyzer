@@ -35171,9 +35171,28 @@ module.exports = { canonicalizeDiagram, CANONICALIZER_VERSION };
 module.exports = {
   ENGINE_MERMAID: "mermaid",
   ENGINE_PLANTUML: "plantuml",
+  ENGINE_DITAA: "ditaa",
+  ENGINE_D2: "d2",
+  ENGINE_GRAPHVIZ: "graphviz",
+  ENGINE_ASCII: "ascii",
+  ENGINE_SVGBOB: "svgbob",
   REWRITE_MANAGED_BLOCKS: "managed_blocks",
   REWRITE_CHECK_ONLY: "check_only",
-  CANONICALIZER_VERSION: "1"
+  CANONICALIZER_VERSION: "1",
+
+  // Maps fence language tags to canonical engine names
+  FENCE_TAG_MAP: {
+    mermaid: "mermaid",
+    plantuml: "plantuml",
+    puml: "plantuml",
+    ditaa: "ditaa",
+    d2: "d2",
+    dot: "graphviz",
+    graphviz: "graphviz",
+    neato: "graphviz",
+    ascii: "ascii",
+    svgbob: "svgbob"
+  }
 };
 
 
@@ -35336,8 +35355,10 @@ module.exports = { rewriteMarkdownFile, makeManagedBlock };
 
 const fs = __nccwpck_require__(1943);
 const fg = __nccwpck_require__(5648);
+const { FENCE_TAG_MAP } = __nccwpck_require__(4201);
 
-const BLOCK_RE = /```(mermaid|plantuml|puml)\n([\s\S]*?)```/g;
+const SUPPORTED_TAGS = Object.keys(FENCE_TAG_MAP).join("|");
+const BLOCK_RE = new RegExp("```(" + SUPPORTED_TAGS + ")\\n([\\s\\S]*?)```", "g");
 
 async function scanFiles(patterns) {
   const paths = await fg(patterns, { onlyFiles: true, unique: true });
@@ -35350,7 +35371,8 @@ async function scanFiles(patterns) {
 
     BLOCK_RE.lastIndex = 0;
     while ((match = BLOCK_RE.exec(content)) !== null) {
-      const engine = match[1] === "puml" ? "plantuml" : match[1];
+      const tag = match[1].toLowerCase();
+      const engine = FENCE_TAG_MAP[tag] || tag;
       blocks.push({
         engine,
         source: match[2].trimEnd(),
@@ -35368,7 +35390,7 @@ async function scanFiles(patterns) {
   return results;
 }
 
-module.exports = { scanFiles };
+module.exports = { scanFiles, BLOCK_RE };
 
 
 /***/ }),
@@ -35388,11 +35410,40 @@ function plantumlImageUrl(source) {
   return `https://www.plantuml.com/plantuml/svg/~h${hex}`;
 }
 
+function ditaaImageUrl(source) {
+  const wrapped = `@startditaa\n${source}\n@endditaa`;
+  const hex = Buffer.from(wrapped, "utf8").toString("hex");
+  return `https://www.plantuml.com/plantuml/svg/~h${hex}`;
+}
+
+function krokiImageUrl(engine, source) {
+  const encoded = Buffer.from(source, "utf8").toString("base64url");
+  return `https://kroki.io/${engine}/svg/${encoded}`;
+}
+
+function getImageUrl(engine, source) {
+  switch (engine) {
+    case "mermaid":
+      return mermaidImageUrl(source);
+    case "plantuml":
+      return plantumlImageUrl(source);
+    case "ditaa":
+      return ditaaImageUrl(source);
+    case "graphviz":
+      return krokiImageUrl("graphviz", source);
+    case "d2":
+      return krokiImageUrl("d2", source);
+    case "svgbob":
+      return krokiImageUrl("svgbob", source);
+    case "ascii":
+      return krokiImageUrl("svgbob", source);
+    default:
+      return krokiImageUrl(engine, source);
+  }
+}
+
 function makeStaticUrls({ engine, canonicalSource, hashes }) {
-  const imageUrl =
-    engine === "mermaid"
-      ? mermaidImageUrl(canonicalSource)
-      : plantumlImageUrl(canonicalSource);
+  const imageUrl = getImageUrl(engine, canonicalSource);
 
   return {
     diagramId: hashes.canonicalHash.slice(0, 16),

@@ -10,11 +10,40 @@ function plantumlImageUrl(source) {
   return `https://www.plantuml.com/plantuml/svg/~h${hex}`;
 }
 
+function ditaaImageUrl(source) {
+  const wrapped = `@startditaa\n${source}\n@endditaa`;
+  const hex = Buffer.from(wrapped, "utf8").toString("hex");
+  return `https://www.plantuml.com/plantuml/svg/~h${hex}`;
+}
+
+function krokiImageUrl(engine, source) {
+  const encoded = Buffer.from(source, "utf8").toString("base64url");
+  return `https://kroki.io/${engine}/svg/${encoded}`;
+}
+
+function getImageUrl(engine, source) {
+  switch (engine) {
+    case "mermaid":
+      return mermaidImageUrl(source);
+    case "plantuml":
+      return plantumlImageUrl(source);
+    case "ditaa":
+      return ditaaImageUrl(source);
+    case "graphviz":
+      return krokiImageUrl("graphviz", source);
+    case "d2":
+      return krokiImageUrl("d2", source);
+    case "svgbob":
+      return krokiImageUrl("svgbob", source);
+    case "ascii":
+      return krokiImageUrl("svgbob", source);
+    default:
+      return krokiImageUrl(engine, source);
+  }
+}
+
 function makeStaticUrls({ engine, canonicalSource, hashes }) {
-  const imageUrl =
-    engine === "mermaid"
-      ? mermaidImageUrl(canonicalSource)
-      : plantumlImageUrl(canonicalSource);
+  const imageUrl = getImageUrl(engine, canonicalSource);
 
   return {
     diagramId: hashes.canonicalHash.slice(0, 16),

@@ -1,7 +1,9 @@
 const fs = require("fs/promises");
 const fg = require("fast-glob");
+const { FENCE_TAG_MAP } = require("./constants");
 
-const BLOCK_RE = /```(mermaid|plantuml|puml)\n([\s\S]*?)```/g;
+const SUPPORTED_TAGS = Object.keys(FENCE_TAG_MAP).join("|");
+const BLOCK_RE = new RegExp("```(" + SUPPORTED_TAGS + ")\\n([\\s\\S]*?)```", "g");
 
 async function scanFiles(patterns) {
   const paths = await fg(patterns, { onlyFiles: true, unique: true });
@@ -14,7 +16,8 @@ async function scanFiles(patterns) {
 
     BLOCK_RE.lastIndex = 0;
     while ((match = BLOCK_RE.exec(content)) !== null) {
-      const engine = match[1] === "puml" ? "plantuml" : match[1];
+      const tag = match[1].toLowerCase();
+      const engine = FENCE_TAG_MAP[tag] || tag;
       blocks.push({
         engine,
         source: match[2].trimEnd(),
@@ -32,4 +35,4 @@ async function scanFiles(patterns) {
   return results;
 }
 
-module.exports = { scanFiles };
+module.exports = { scanFiles, BLOCK_RE };

@@ -3,18 +3,19 @@ const assert = require("node:assert/strict");
 const fs = require("fs/promises");
 const path = require("path");
 const os = require("os");
+const { FENCE_TAG_MAP } = require("../src/constants");
+const { BLOCK_RE } = require("../src/scan");
 
 // We test the regex and block extraction logic directly
 // by creating temp files and scanning them.
-
-const BLOCK_RE = /```(mermaid|plantuml|puml)\n([\s\S]*?)```/g;
 
 function extractBlocks(content) {
   const blocks = [];
   let match;
   BLOCK_RE.lastIndex = 0;
   while ((match = BLOCK_RE.exec(content)) !== null) {
-    const engine = match[1] === "puml" ? "plantuml" : match[1];
+    const tag = match[1].toLowerCase();
+    const engine = FENCE_TAG_MAP[tag] || tag;
     blocks.push({
       engine,
       source: match[2].trimEnd(),
@@ -86,5 +87,69 @@ describe("block extraction", () => {
     assert.equal(blocks.length, 1);
     assert.equal(blocks[0].start, prefix.length);
     assert.equal(blocks[0].end, prefix.length + block.length);
+  });
+
+  it("detects a ditaa block", () => {
+    const md = '```ditaa\n+--------+\n| Hello  |\n+--------+\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "ditaa");
+  });
+
+  it("detects a d2 block", () => {
+    const md = '```d2\nx -> y: hello\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "d2");
+  });
+
+  it("detects a graphviz block", () => {
+    const md = '```graphviz\ndigraph { A -> B }\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "graphviz");
+  });
+
+  it("normalizes dot to graphviz", () => {
+    const md = '```dot\ndigraph { A -> B }\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "graphviz");
+  });
+
+  it("normalizes neato to graphviz", () => {
+    const md = '```neato\ngraph { A -- B }\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "graphviz");
+  });
+
+  it("detects an ascii block", () => {
+    const md = '```ascii\n+--+\n|Hi|\n+--+\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "ascii");
+  });
+
+  it("detects a svgbob block", () => {
+    const md = '```svgbob\n  .---.\n  | A |\n  \'---\'\n```';
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].engine, "svgbob");
+  });
+
+  it("detects mixed diagram types", () => {
+    const md = [
+      "```mermaid", "graph TD", "  A --> B", "```",
+      "",
+      "```d2", "x -> y", "```",
+      "",
+      "```ditaa", "+--+", "|Hi|", "+--+", "```"
+    ].join("\n");
+    const blocks = extractBlocks(md);
+    assert.equal(blocks.length, 3);
+    assert.equal(blocks[0].engine, "mermaid");
+    assert.equal(blocks[1].engine, "d2");
+    assert.equal(blocks[2].engine, "ditaa");
   });
 });
