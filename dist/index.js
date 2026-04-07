@@ -35547,7 +35547,8 @@ async function uploadDiagram({
     headers["authorization"] = `Bearer ${token}`;
   }
 
-  const response = await fetch(apiUrl, {
+  const url = apiUrl.replace(/\/+$/, "") + "/v1/diagrams/import";
+  const response = await fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify({ code: canonicalSource })
