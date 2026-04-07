@@ -1,56 +1,6 @@
 const { info } = require("./logger");
 
-function mermaidImageUrl(source) {
-  const encoded = Buffer.from(source, "utf8").toString("base64url");
-  return `https://mermaid.ink/img/base64:${encoded}`;
-}
-
-function plantumlImageUrl(source) {
-  const hex = Buffer.from(source, "utf8").toString("hex");
-  return `https://www.plantuml.com/plantuml/svg/~h${hex}`;
-}
-
-function ditaaImageUrl(source) {
-  const wrapped = `@startditaa\n${source}\n@endditaa`;
-  const hex = Buffer.from(wrapped, "utf8").toString("hex");
-  return `https://www.plantuml.com/plantuml/svg/~h${hex}`;
-}
-
-function krokiImageUrl(engine, source) {
-  const encoded = Buffer.from(source, "utf8").toString("base64url");
-  return `https://kroki.io/${engine}/svg/${encoded}`;
-}
-
-function getImageUrl(engine, source) {
-  switch (engine) {
-    case "mermaid":
-      return mermaidImageUrl(source);
-    case "plantuml":
-      return plantumlImageUrl(source);
-    case "ditaa":
-      return ditaaImageUrl(source);
-    case "graphviz":
-      return krokiImageUrl("graphviz", source);
-    case "d2":
-      return krokiImageUrl("d2", source);
-    case "svgbob":
-      return krokiImageUrl("svgbob", source);
-    case "ascii":
-      return krokiImageUrl("svgbob", source);
-    default:
-      return krokiImageUrl(engine, source);
-  }
-}
-
-function makeStaticUrls({ engine, canonicalSource, hashes }) {
-  const imageUrl = getImageUrl(engine, canonicalSource);
-
-  return {
-    diagramId: hashes.canonicalHash.slice(0, 16),
-    imageUrl,
-    interactiveUrl: imageUrl
-  };
-}
+const API_BASE = "https://api.syntroper.com/v1";
 
 async function uploadDiagram({
   token,
@@ -62,10 +12,35 @@ async function uploadDiagram({
   repository,
   commitSha
 }) {
-  info(`Resolving diagram (engine=${engine}, canonical=${hashes.canonicalHash.slice(0, 12)}…)`);
+  info(`Uploading diagram (engine=${engine}, canonical=${hashes.canonicalHash.slice(0, 12)}…)`);
 
-  // Static mode: generate public renderer URLs directly
-  return makeStaticUrls({ engine, canonicalSource, hashes });
+  const response = await fetch(`${API_BASE}/diagrams/upsert`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      engine,
+      rawSource,
+      canonicalSource,
+      canonicalHash: hashes.canonicalHash,
+      renderHash: hashes.renderHash,
+      source: {
+        repository,
+        filePath,
+        commitSha
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Syntroper API error ${response.status}: ${text}`);
+  }
+
+  // Expected response: { diagramId, imageUrl, interactiveUrl }
+  return response.json();
 }
 
-module.exports = { uploadDiagram, makeStaticUrls };
+module.exports = { uploadDiagram };

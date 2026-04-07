@@ -3,7 +3,7 @@
 Some intro text.
 
 <!-- syntroper:start -->
-[![Diagram](https://mermaid.ink/img/base64:Z3JhcGggVEQKICBBW1N0YXJ0XSAtLT4gQltQcm9jZXNzXQogIEIgLS0-IENbRW5kXQ)](https://mermaid.ink/img/base64:Z3JhcGggVEQKICBBW1N0YXJ0XSAtLT4gQltQcm9jZXNzXQogIEIgLS0-IENbRW5kXQ)
+[![Diagram](https://cdn.syntroper.com/d/9ad0c5e4a2a630cde187ee18016369babe09a74a38ccd360794e986616fc88b2.svg)](https://syntroper.com/d/5592260172d1152c)
 
 Open interactive version on Syntroper.
 Use the Syntroper browser extension for inline interactive mode.
@@ -13,7 +13,7 @@ Use the Syntroper browser extension for inline interactive mode.
 More text here.
 
 <!-- syntroper:start -->
-[![Diagram](https://www.plantuml.com/plantuml/svg/~h407374617274756d6c0a416c696365202d3e20426f62203a2048656c6c6f0a426f62202d3e20416c696365203a2048690a40656e64756d6c)](https://www.plantuml.com/plantuml/svg/~h407374617274756d6c0a416c696365202d3e20426f62203a2048656c6c6f0a426f62202d3e20416c696365203a2048690a40656e64756d6c)
+[![Diagram](https://cdn.syntroper.com/d/bc224851b590fa4464ea50f439e3b476431280a65bc925bd92b4cc2951ab193c.svg)](https://syntroper.com/d/7d1ba312a78dd64f)
 
 Open interactive version on Syntroper.
 Use the Syntroper browser extension for inline interactive mode.
