@@ -17,6 +17,7 @@
  *   - Provide provenance (hashes, engine, diagram ID)
  */
 const fs = require("fs/promises");
+const { BLOCK_RE } = require("./scan");
 
 function makeManagedBlock(block) {
   return [
@@ -32,19 +33,27 @@ function makeManagedBlock(block) {
 
 async function rewriteMarkdownFile(filePath, blocks) {
   let content = await fs.readFile(filePath, "utf8");
-  let changed = false;
 
-  // Sort blocks from last to first so earlier positions stay valid
-  const sorted = [...blocks].filter(b => b.rendered).sort((a, b) => b.start - a.start);
-
-  for (const block of sorted) {
-    const replacement = makeManagedBlock(block);
-    content = content.slice(0, block.start) + replacement + content.slice(block.end);
-    changed = true;
+  // Build a map from originalMatch text → managed block replacement
+  const replacements = new Map();
+  for (const block of blocks) {
+    if (block.rendered) {
+      replacements.set(block.originalMatch, makeManagedBlock(block));
+    }
   }
 
+  if (replacements.size === 0) return false;
+
+  // Single-pass replacement using the same regex as scanning.
+  // Using a callback function avoids $-pattern interpretation issues.
+  BLOCK_RE.lastIndex = 0;
+  const newContent = content.replace(BLOCK_RE, (match) => {
+    return replacements.has(match) ? replacements.get(match) : match;
+  });
+
+  const changed = newContent !== content;
   if (changed) {
-    await fs.writeFile(filePath, content, "utf8");
+    await fs.writeFile(filePath, newContent, "utf8");
   }
 
   return changed;
