@@ -9,8 +9,7 @@ branding:
 inputs:
   api_url:
     description: "Syntroper API endpoint URL"
-    required: false
-    default: "https://dev-api.syntroper.ai"
+    required: true
   token:
     description: "Syntroper API token"
     required: false
