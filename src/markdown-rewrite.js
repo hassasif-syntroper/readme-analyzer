@@ -34,12 +34,13 @@ async function rewriteMarkdownFile(filePath, blocks) {
   let content = await fs.readFile(filePath, "utf8");
   let changed = false;
 
-  for (const block of blocks) {
+  // Sort blocks from last to first so earlier positions stay valid
+  const sorted = [...blocks].filter(b => b.rendered).sort((a, b) => b.start - a.start);
+
+  for (const block of sorted) {
     const replacement = makeManagedBlock(block);
-    if (content.includes(block.originalMatch)) {
-      content = content.replace(block.originalMatch, replacement);
-      changed = true;
-    }
+    content = content.slice(0, block.start) + replacement + content.slice(block.end);
+    changed = true;
   }
 
   if (changed) {
