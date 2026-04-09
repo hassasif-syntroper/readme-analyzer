@@ -35137,44 +35137,104 @@ module.exports.promise = queueAsPromised
 /**
  * canonicalize.js — Normalizes diagram source to produce stable hashes.
  *
+ * WHY THIS EXISTS:
  * Problem: Whitespace-only edits (trailing spaces, blank lines, CRLF vs LF)
- * would produce different hashes and create duplicate diagram entries.
+ * would produce different SHA-256 hashes and create duplicate diagram entries
+ * in Syntroper, even though the rendered diagram is visually identical.
  *
- * Solution: Conservative canonicalization that only removes formatting-only
- * differences we are confident do not affect diagram output:
- *   - CRLF → LF
- *   - Trailing whitespace on each line
- *   - Multiple consecutive blank lines → single blank line
- *   - Leading/trailing blank lines trimmed
+ * Solution: Run the source through a conservative canonicalization pipeline
+ * BEFORE hashing. This ensures formatting-only differences produce the SAME hash.
  *
- * Important: We intentionally do NOT normalize indentation inside content,
- * reorder statements, strip comments, or modify anything inside quoted strings.
- * Those changes could alter diagram semantics.
+ * What we normalize (safe — never changes diagram output):
+ *   - CRLF → LF               (Windows vs Mac/Linux line endings)
+ *   - Trailing whitespace      (invisible spaces/tabs at end of lines)
+ *   - Multiple blank lines     (3+ consecutive newlines → 2 newlines)
+ *   - Leading/trailing blanks  (empty lines at the start/end of the source)
+ *
+ * What we do NOT normalize (unsafe — could change diagram meaning):
+ *   - Indentation inside content   (some diagrams are indent-sensitive)
+ *   - Statement order               (reordering could change layout)
+ *   - Comments inside diagram code  (some engines use comments for directives)
+ *   - Quoted string contents        (labels, titles, descriptions)
+ *
+ * FLOW:
+ *   Raw source → normalizeNewlines → trimTrailingWhitespace → collapseBlankLines → trim
+ *                                                                                   ↓
+ *                                                                          Canonical source
+ *                                                                          (fed to hashes.js)
+ *
+ * Used by: index.js (called for each diagram block before hashing)
  */
-const { CANONICALIZER_VERSION } = __nccwpck_require__(4201);
+const { CANONICALIZER_VERSION } = __nccwpck_require__(4201);  // Version tag for cache invalidation
 
+/**
+ * normalizeNewlines() — Convert Windows-style line endings to Unix-style.
+ *
+ * Windows uses \r\n (carriage return + line feed), Mac/Linux use \n (line feed only).
+ * A diagram written on Windows and the same diagram on Mac would have different bytes,
+ * producing different hashes. This normalizes both to \n.
+ *
+ * @param {string} text - Raw source text
+ * @returns {string} Text with all \r\n replaced by \n
+ */
 function normalizeNewlines(text) {
-  return text.replace(/\r\n/g, "\n");
+  return text.replace(/\r\n/g, "\n");  // Replace all Windows line endings → Unix
 }
 
+/**
+ * collapseBlankLines() — Reduce 3+ consecutive newlines to exactly 2 (one blank line).
+ *
+ * Some editors or users might add extra blank lines between diagram sections.
+ * These don't affect rendering, but would change the hash.
+ * Example: "A-->B\n\n\n\nC-->D" → "A-->B\n\nC-->D"
+ *
+ * @param {string} text - Source text with normalized newlines
+ * @returns {string} Text with excessive blank lines collapsed
+ */
 function collapseBlankLines(text) {
-  return text.replace(/\n{3,}/g, "\n\n");
+  return text.replace(/\n{3,}/g, "\n\n");  // 3+ newlines → exactly 2 newlines
 }
 
+/**
+ * trimTrailingWhitespace() — Remove invisible spaces/tabs at the end of each line.
+ *
+ * Editors often add or remove trailing whitespace silently.
+ * "  A[User] --> B[Action]   " and "  A[User] --> B[Action]" render the same diagram,
+ * but have different bytes. This strips trailing spaces/tabs from every line.
+ *
+ * Note: We do NOT touch leading whitespace (indentation), because some diagram
+ * languages (like YAML-based configs in Mermaid) are indent-sensitive.
+ *
+ * @param {string} text - Source text to clean
+ * @returns {string} Text with trailing whitespace removed from each line
+ */
 function trimTrailingWhitespace(text) {
   return text
-    .split("\n")
-    .map(line => line.replace(/[ \t]+$/g, ""))
-    .join("\n");
+    .split("\n")                              // Split into individual lines
+    .map(line => line.replace(/[ \t]+$/g, "")) // Remove trailing spaces/tabs from each line
+    .join("\n");                               // Rejoin into a single string
 }
 
+/**
+ * canonicalizeDiagram() — Main entry point. Runs all normalization steps in order.
+ *
+ * The order matters:
+ *   1. normalizeNewlines first — so \r\n doesn't interfere with \n-based operations
+ *   2. trimTrailingWhitespace — clean each line
+ *   3. collapseBlankLines — reduce excessive blank lines
+ *   4. trim — remove leading/trailing blank lines from the whole block
+ *
+ * @param {string} engine - The diagram engine (currently unused, reserved for engine-specific rules)
+ * @param {string} source - The raw diagram source text from the markdown block
+ * @returns {string} Canonicalized source, ready for hashing
+ */
 function canonicalizeDiagram(engine, source) {
-  let out = normalizeNewlines(source);
-  out = trimTrailingWhitespace(out);
-  out = collapseBlankLines(out);
-  out = out.trim();
+  let out = normalizeNewlines(source);       // Step 1: \r\n → \n
+  out = trimTrailingWhitespace(out);         // Step 2: Remove trailing spaces from each line
+  out = collapseBlankLines(out);             // Step 3: Collapse 3+ blank lines → 1 blank line
+  out = out.trim();                          // Step 4: Remove leading/trailing blank lines
 
-  return out;
+  return out;  // Ready for hashing in hashes.js
 }
 
 module.exports = { canonicalizeDiagram, CANONICALIZER_VERSION };
@@ -35186,33 +35246,52 @@ module.exports = { canonicalizeDiagram, CANONICALIZER_VERSION };
 /***/ ((module) => {
 
 /**
- * constants.js — Shared constants and configuration.
+ * constants.js — Shared constants and configuration for the entire action.
  *
- * ENGINE_* constants are the canonical engine names used internally.
- * FENCE_TAG_MAP maps markdown fence language tags to canonical engine names
- * (e.g. "dot" and "neato" both map to "graphviz").
+ * This file is the single source of truth for:
+ *   - Which diagram engines are supported (ENGINE_* constants)
+ *   - How markdown fence tags map to engine names (FENCE_TAG_MAP)
+ *   - Rewrite mode options (managed_blocks vs check_only)
+ *   - Canonicalizer version (bumped when canonicalization logic changes)
  *
  * To add a new diagram type:
- *   1. Add an ENGINE_* constant
- *   2. Add the fence tag(s) to FENCE_TAG_MAP
- *   3. The Syntroper API handles rendering — no client-side changes needed
+ *   1. Add an ENGINE_* constant below
+ *   2. Add the fence tag(s) to FENCE_TAG_MAP (multiple tags can map to one engine)
+ *   3. The Syntroper API handles rendering — no client-side rendering needed
+ *
+ * Used by: scan.js (FENCE_TAG_MAP for regex), canonicalize.js (CANONICALIZER_VERSION),
+ *          index.js (REWRITE_CHECK_ONLY), markdown-rewrite.js (via scan.js BLOCK_RE)
  */
 module.exports = {
-  ENGINE_MERMAID: "mermaid",
-  ENGINE_PLANTUML: "plantuml",
-  ENGINE_DITAA: "ditaa",
-  ENGINE_ASCII: "ascii",
-  REWRITE_MANAGED_BLOCKS: "managed_blocks",
-  REWRITE_CHECK_ONLY: "check_only",
+  // ── Canonical engine names ──────────────────────────────────────────
+  // These are the normalized internal names used throughout the action.
+  // When a user writes ```puml, it gets mapped to "plantuml" via FENCE_TAG_MAP.
+  ENGINE_MERMAID: "mermaid",       // Mermaid.js diagrams (flowchart, sequence, class, etc.)
+  ENGINE_PLANTUML: "plantuml",     // PlantUML diagrams (also covers the "puml" alias)
+  ENGINE_DITAA: "ditaa",           // Ditaa ASCII-to-diagram renderer
+  ENGINE_ASCII: "ascii",           // Raw ASCII art (passed through as-is)
+
+  // ── Rewrite mode options ────────────────────────────────────────────
+  // Controls what the action does after uploading diagrams to the API.
+  REWRITE_MANAGED_BLOCKS: "managed_blocks",  // Replace ```mermaid blocks with image + metadata
+  REWRITE_CHECK_ONLY: "check_only",          // Upload only, don't modify any files
+
+  // ── Canonicalizer version ───────────────────────────────────────────
+  // Bump this if canonicalization logic changes, so hashes are recalculated.
+  // This prevents stale cached images from being served after a logic update.
   CANONICALIZER_VERSION: "1",
 
-  // Maps fence language tags to canonical engine names
+  // ── Fence tag → engine mapping ──────────────────────────────────────
+  // Maps the language tag after ``` in markdown to the canonical engine name.
+  // Multiple tags can map to the same engine (e.g. "puml" → "plantuml").
+  // This object's keys are also used to build the scanning regex in scan.js:
+  //   Object.keys(FENCE_TAG_MAP).join("|") → "mermaid|plantuml|puml|ditaa|ascii"
   FENCE_TAG_MAP: {
-    mermaid: "mermaid",
-    plantuml: "plantuml",
-    puml: "plantuml",
-    ditaa: "ditaa",
-    ascii: "ascii"
+    mermaid: "mermaid",      // ```mermaid  → engine "mermaid"
+    plantuml: "plantuml",    // ```plantuml → engine "plantuml"
+    puml: "plantuml",        // ```puml     → engine "plantuml" (alias)
+    ditaa: "ditaa",          // ```ditaa    → engine "ditaa"
+    ascii: "ascii"           // ```ascii    → engine "ascii"
   }
 };
 
@@ -35228,32 +35307,69 @@ module.exports = {
  * When the action input commit_changes=true, this module commits the
  * rewritten markdown files and pushes them back to the repository.
  *
- * Uses the standard github-actions[bot] user identity so commits
- * are attributed to the bot, not a human user.
+ * HOW IT WORKS:
+ *   1. Configure git user identity as github-actions[bot]
+ *   2. Stage all changed files (git add .)
+ *   3. Commit with the provided message
+ *   4. Push to the remote (origin)
  *
- * This is opt-in — many users prefer to have the action only modify
- * files in the working directory and handle committing themselves
- * (e.g. via a separate step or a PR-based workflow).
+ * WHY github-actions[bot]?
+ *   - Commits are attributed to the GitHub Actions bot, not a human user
+ *   - The bot ID (41898282) is GitHub's official bot user ID
+ *   - This is the standard pattern used by most GitHub Actions that commit changes
+ *
+ * IMPORTANT: This is opt-in via the commit_changes input.
+ *   - Many users prefer to handle committing themselves (e.g. via a separate
+ *     workflow step or a PR-based workflow)
+ *   - The action only calls this function if commitChanges === true AND
+ *     at least one file was actually modified
+ *
+ * PERMISSIONS: The workflow must have "contents: write" permission for push to work.
+ *   Example workflow YAML:
+ *     permissions:
+ *       contents: write
+ *
+ * Used by: index.js (called at the end of run() if files were changed and commit is enabled)
  */
-const { execFile } = __nccwpck_require__(1421);
-const { promisify } = __nccwpck_require__(7975);
-const execFileAsync = promisify(execFile);
-const { info } = __nccwpck_require__(5178);
+const { execFile } = __nccwpck_require__(1421);  // Node.js child process (for running shell commands)
+const { promisify } = __nccwpck_require__(7975);           // Convert callback-based functions to promise-based
+const execFileAsync = promisify(execFile);             // Promise-based version of execFile
+const { info } = __nccwpck_require__(5178);                  // Logging utility
 
+/**
+ * maybeCommitChanges() — Commit and push all modified files.
+ *
+ * Called "maybe" because the try/catch around commit handles the case
+ * where there are no actual changes to commit (git commit would fail).
+ *
+ * @param {string} message - Commit message (e.g. "chore: update Syntroper diagrams")
+ */
 async function maybeCommitChanges(message) {
+  // ── Step 1: Configure git identity ──────────────────────────────────
+  // GitHub Actions runners start with no git user configured.
+  // We must set user.name and user.email before committing.
   info("Configuring git user for commit…");
-  await execFileAsync("git", ["config", "user.name", "github-actions[bot]"]);
+  await execFileAsync("git", ["config", "user.name", "github-actions[bot]"]);  // Bot username
   await execFileAsync("git", [
     "config",
     "user.email",
-    "41898282+github-actions[bot]@users.noreply.github.com"
+    "41898282+github-actions[bot]@users.noreply.github.com"  // Official GitHub bot email
   ]);
+
+  // ── Step 2: Stage all changes ───────────────────────────────────────
+  // "git add ." stages ALL modified files in the working directory.
+  // This includes the rewritten markdown files (README.md, docs/*.md, etc.)
   await execFileAsync("git", ["add", "."]);
+
+  // ── Step 3: Commit and push ─────────────────────────────────────────
   try {
-    await execFileAsync("git", ["commit", "-m", message]);
-    await execFileAsync("git", ["push"]);
+    await execFileAsync("git", ["commit", "-m", message]);  // Create a commit with the given message
+    await execFileAsync("git", ["push"]);                    // Push to the remote repository
     info("Committed and pushed diagram changes.");
   } catch {
+    // If there are no staged changes, "git commit" exits with a non-zero code.
+    // This is normal — it means the rewritten content was identical to what was
+    // already on disk (e.g. the diagrams were already up to date).
     info("Nothing to commit.");
   }
 }
@@ -35269,47 +35385,91 @@ module.exports = { maybeCommitChanges };
 /**
  * hashes.js — Generates three-level identity hashes for diagrams.
  *
- * Three hash levels serve different purposes:
+ * WHY THREE HASHES?
+ * Each hash serves a different purpose in the Syntroper system:
  *
- *   1. rawSourceHash:  SHA-256 of the canonicalized source text.
- *      Used for exact source tracking and provenance.
+ *   1. rawSourceHash:  SHA-256 of the canonicalized source text alone.
+ *      Purpose: Exact source tracking and provenance.
+ *      Example use: "Has this exact source text been seen before?"
  *
  *   2. canonicalHash:  SHA-256 of { engine + canonicalSource }.
- *      Used as the primary diagram identity key for deduplication.
- *      Same diagram in different repos → same canonicalHash.
+ *      Purpose: PRIMARY diagram identity key for deduplication.
+ *      Why engine is included: The same source text "A-->B" could be valid
+ *      Mermaid AND PlantUML, but would render differently. Including the
+ *      engine ensures they're treated as separate diagrams.
+ *      Key property: Same diagram in different repos → same canonicalHash.
  *
  *   3. renderHash:     SHA-256 of { engine + canonicalHash + renderConfig }.
- *      Used as the asset cache key for generated images.
- *      Same diagram with different theme/renderer version → different renderHash.
+ *      Purpose: Asset cache key for generated images (PNG/SVG).
+ *      Why separate from canonicalHash: If we change the theme or upgrade
+ *      the renderer version, we want NEW images but the SAME diagram identity.
+ *      Key property: Same diagram + different theme → different renderHash.
  *
- * This means:
- *   - Whitespace-only edits don't create new diagram IDs
- *   - Renderer upgrades only invalidate render assets, not diagram identity
- *   - Cross-repo dedup works via canonicalHash
+ * PRACTICAL IMPLICATIONS:
+ *   - Whitespace-only edits → same canonicalHash → no re-render, no duplicate
+ *   - Theme change → same canonicalHash, different renderHash → re-render only
+ *   - Renderer upgrade → same canonicalHash, different renderHash → re-render only
+ *   - Cross-repo dedup works via canonicalHash (same diagram = same identity)
+ *
+ * HASH FLOW:
+ *   canonicalSource ──────────────────────────────────────→ rawSourceHash
+ *   canonicalSource + engine ─────────────────────────────→ canonicalHash
+ *   canonicalHash + engine + renderConfig ────────────────→ renderHash
+ *
+ * Used by: index.js (called for each diagram block after canonicalization)
  */
-const crypto = __nccwpck_require__(6982);
+const crypto = __nccwpck_require__(6982);  // Node.js built-in cryptography module
 
+/**
+ * sha256() — Compute SHA-256 hash of a string, returned as a hex string.
+ *
+ * SHA-256 produces a 64-character hex string (256 bits).
+ * Example: sha256("hello") → "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+ *
+ * @param {string} value - The string to hash
+ * @returns {string} 64-character hex SHA-256 hash
+ */
 function sha256(value) {
-  return crypto.createHash("sha256").update(value).digest("hex");
+  return crypto.createHash("sha256")  // Create a SHA-256 hash instance
+    .update(value)                     // Feed the input string into it
+    .digest("hex");                    // Output the hash as a hex string
 }
 
+/**
+ * makeHashes() — Generate all three identity hashes for a diagram.
+ *
+ * @param {Object} params
+ * @param {string} params.engine - Canonical engine name (e.g. "mermaid", "plantuml")
+ * @param {string} params.canonicalSource - Canonicalized diagram source (from canonicalize.js)
+ * @param {Object} params.renderConfig - Rendering options like { theme: "default", rendererVersion: "1" }
+ * @returns {{ rawSourceHash: string, canonicalHash: string, renderHash: string }}
+ */
 function makeHashes({ engine, canonicalSource, renderConfig }) {
+  // ── Step 1: canonicalHash (primary identity) ────────────────────────
+  // JSON.stringify ensures consistent key ordering for deterministic hashing.
+  // Input: { engine: "mermaid", canonicalSource: "graph TD\n  A-->B" }
+  // This hash is the MAIN diagram identity used for deduplication.
   const canonicalPayload = JSON.stringify({
-    engine,
-    canonicalSource
+    engine,            // Include engine so same source in different engines = different hash
+    canonicalSource    // The normalized diagram source text
   });
 
-  const canonicalHash = sha256(canonicalPayload);
+  const canonicalHash = sha256(canonicalPayload);  // e.g. "abc123..."
 
+  // ── Step 2: renderHash (asset cache key) ────────────────────────────
+  // Includes canonicalHash + renderConfig so theme/version changes = new cache key.
+  // Input: { engine: "mermaid", canonicalHash: "abc123...", renderConfig: { theme: "default" } }
   const renderPayload = JSON.stringify({
-    engine,
-    canonicalHash,
-    renderConfig
+    engine,            // Included again for completeness
+    canonicalHash,     // Links back to the canonical identity
+    renderConfig       // Theme, renderer version, etc. — changing this = new image
   });
 
-  const renderHash = sha256(renderPayload);
+  const renderHash = sha256(renderPayload);  // e.g. "def456..."
 
-  const rawSourceHash = sha256(canonicalSource);
+  // ── Step 3: rawSourceHash (provenance) ──────────────────────────────
+  // Just the source text alone, without engine. For exact source tracking.
+  const rawSourceHash = sha256(canonicalSource);  // e.g. "ghi789..."
 
   return { rawSourceHash, canonicalHash, renderHash };
 }
@@ -35326,31 +35486,82 @@ module.exports = { makeHashes, sha256 };
  * inputs.js — Reads and validates GitHub Action inputs.
  *
  * Inputs are defined in action.yml and provided by users in their workflow YAML.
- * This module parses them into a clean object used by index.js.
+ * This module parses them into a clean JS object used by index.js.
  *
- * Inputs:
- *   - api_url:        Syntroper API endpoint URL (required)
- *   - token:          Syntroper API token (optional, for auth)
- *   - paths:          Newline-separated glob patterns for markdown files to scan
- *   - rewrite_mode:   "managed_blocks" (replace diagrams) or "check_only" (upload only)
- *   - commit_changes: Whether to git commit/push modified files
- *   - commit_message: Custom commit message
+ * Example workflow YAML that provides these inputs:
+ *   - uses: hassasif-syntroper/readme-analyzer@main
+ *     with:
+ *       api_url: "https://dev-api.syntroper.ai"
+ *       paths: |
+ *         README.md
+ *         docs/*.md
+ *       rewrite_mode: managed_blocks
+ *       commit_changes: "true"
+ *
+ * Input descriptions:
+ *   - api_url:        Syntroper API base URL (required). e.g. "https://dev-api.syntroper.ai"
+ *   - token:          Syntroper API auth token (optional). Used for authenticated API calls.
+ *   - paths:          Newline-separated glob patterns for markdown files to scan.
+ *   - rewrite_mode:   "managed_blocks" = replace diagram blocks with images.
+ *                     "check_only" = upload to API but don't modify files.
+ *   - commit_changes: "true" = auto-commit and push changes. "false" = only modify files locally.
+ *   - commit_message: Custom commit message for the auto-commit.
+ *
+ * Used by: index.js (called once at the start of run())
  */
-const core = __nccwpck_require__(7484);
+const core = __nccwpck_require__(7484);  // GitHub Actions toolkit for reading inputs
 
+/**
+ * splitLines() — Splits a multi-line string into an array of non-empty trimmed lines.
+ *
+ * GitHub Actions passes multi-line inputs as a single string with newlines.
+ * For example, the "paths" input might be:
+ *   "README.md\ndocs/*.md\n"
+ * This function converts that to: ["README.md", "docs/*.md"]
+ *
+ * @param {string} value - The raw multi-line string from the action input
+ * @returns {string[]} Array of non-empty, trimmed lines
+ */
 function splitLines(value) {
   return value
-    .split(/\r?\n/)
-    .map(s => s.trim())
-    .filter(Boolean);
+    .split(/\r?\n/)       // Split on newlines (handles both \n and \r\n)
+    .map(s => s.trim())   // Remove leading/trailing whitespace from each line
+    .filter(Boolean);     // Remove empty lines (empty string is falsy)
 }
 
+/**
+ * getInputs() — Reads all action inputs and returns them as a typed object.
+ *
+ * core.getInput() reads from the environment variables that GitHub Actions
+ * sets based on the workflow YAML "with:" block. The env var format is:
+ *   INPUT_API_URL, INPUT_TOKEN, INPUT_PATHS, etc.
+ *
+ * @returns {{ apiUrl: string, token: string, paths: string[], rewriteMode: string, commitChanges: boolean, commitMessage: string }}
+ */
 function getInputs() {
+  // Required: the Syntroper API base URL (e.g. "https://dev-api.syntroper.ai")
+  // The action will POST diagram source to {apiUrl}/v1/diagrams/import
   const apiUrl = core.getInput("api_url", { required: true });
+
+  // Optional: API authentication token. If provided, sent as "Bearer <token>" header.
+  // Falls back to empty string (no auth) if not provided.
   const token = core.getInput("token") || "";
+
+  // Required: glob patterns for which markdown files to scan for diagram blocks.
+  // Split from multi-line string into array: "README.md\ndocs/*.md" → ["README.md", "docs/*.md"]
   const paths = splitLines(core.getInput("paths"));
+
+  // Optional: controls what happens after uploading diagrams to the API.
+  // "managed_blocks" (default) = replace ```mermaid blocks with image + metadata.
+  // "check_only" = upload diagrams but don't modify any files.
   const rewriteMode = core.getInput("rewrite_mode") || "managed_blocks";
+
+  // Optional: whether to auto-commit and push the rewritten files.
+  // Defaults to "false". Only "true" (string) enables it.
   const commitChanges = (core.getInput("commit_changes") || "false") === "true";
+
+  // Optional: custom git commit message for the auto-commit.
+  // Only used when commitChanges is true.
   const commitMessage = core.getInput("commit_message") || "chore: update Syntroper diagrams";
 
   return { apiUrl, token, paths, rewriteMode, commitChanges, commitMessage };
@@ -35367,17 +35578,34 @@ module.exports = { getInputs };
 /**
  * logger.js — Thin logging wrappers over @actions/core.
  *
- * Centralizes log calls so we can control formatting in one place.
- * In GitHub Actions, these appear in the workflow run log output.
+ * Centralizes all log calls so we can control formatting in one place.
+ * In GitHub Actions, these appear in the workflow run log output panel.
+ *
+ * Why wrap @actions/core instead of using it directly?
+ *   - Single place to change log format (e.g. add timestamps, prefixes)
+ *   - Easier to swap out for testing (mock this module, not @actions/core)
+ *   - Keeps other modules decoupled from the GitHub Actions SDK
+ *
+ * Used by: index.js, syntroper-api.js, git.js
  */
-const core = __nccwpck_require__(7484);
+const core = __nccwpck_require__(7484);  // GitHub Actions toolkit for logging
 
+/**
+ * info() — Log an informational message.
+ * Shows as a normal line in the GitHub Actions workflow log.
+ * @param {string} message - The message to log
+ */
 function info(message) {
-  core.info(message);
+  core.info(message);  // Writes to stdout in the Actions runner
 }
 
+/**
+ * warning() — Log a warning message.
+ * Shows as a yellow warning annotation in the GitHub Actions UI.
+ * @param {string} message - The warning message to log
+ */
 function warning(message) {
-  core.warning(message);
+  core.warning(message);  // Creates a warning annotation in the Actions UI
 }
 
 module.exports = { info, warning };
@@ -35391,40 +35619,91 @@ module.exports = { info, warning };
 /**
  * markdown-rewrite.js — Replaces diagram code blocks with managed image blocks.
  *
+ * This is the FINAL step in the pipeline (before git commit).
  * After the Syntroper API returns an imageUrl for each diagram, this module
  * replaces the original fenced code block (e.g. ```mermaid...```) with a
- * managed block that contains:
+ * "managed block" that contains a static image and metadata.
  *
+ * BEFORE (original markdown):
+ *   ```mermaid
+ *   graph TD
+ *     A-->B
+ *   ```
+ *
+ * AFTER (managed block):
  *   <!-- syntroper:start -->
- *   [![Diagram](imageUrl)](interactiveUrl)
+ *   [![Diagram](https://s3...png)](https://s3...png)
+ *
  *   Open interactive version on Syntroper.
- *   <!-- syntroper:diagram canonical=... render=... id=... engine=... -->
+ *   Use the Syntroper browser extension for inline interactive mode.
+ *   <!-- syntroper:diagram canonical=abc123 render=def456 id=uuid engine=mermaid -->
  *   <!-- syntroper:end -->
  *
- * The HTML comments serve as metadata markers that:
- *   - The browser extension can detect for inline interactive rendering
- *   - The action can detect on re-runs to update existing blocks (TODO)
- *   - Provide provenance (hashes, engine, diagram ID)
+ * WHY THIS FORMAT?
+ *   - The [![Diagram](...)](...) is a standard markdown image link — works everywhere
+ *   - HTML comments (<!-- -->) are invisible on GitHub but machine-readable
+ *   - The browser extension reads the "id" from the comment to load an interactive iframe
+ *   - The hashes provide provenance for debugging and cache invalidation
+ *   - syntroper:start/end markers let us identify our blocks for future re-runs (TODO)
+ *
+ * REPLACEMENT STRATEGY:
+ *   We use a single-pass regex callback (content.replace(BLOCK_RE, callback)).
+ *   This avoids two bugs from earlier approaches:
+ *     1. String.replace() with static replacement interprets $-patterns ($1, $&, etc.)
+ *        which corrupted content when diagram source contained $ characters
+ *     2. Position-based replacement (slice) shifted offsets when processing multiple blocks
+ *   The callback approach processes all blocks in one pass, so no position shifting occurs.
+ *
+ * Used by: index.js (called once per file after all blocks in that file are uploaded)
  */
-const fs = __nccwpck_require__(1943);
-const { BLOCK_RE } = __nccwpck_require__(9355);
+const fs = __nccwpck_require__(1943);      // Node.js file system (promise-based)
+const { BLOCK_RE } = __nccwpck_require__(9355); // Same regex used for scanning — ensures exact match
 
+/**
+ * makeManagedBlock() — Build the replacement markdown for a single diagram.
+ *
+ * Takes a block object (with .rendered data from the API) and returns
+ * the managed block string that will replace the original ```mermaid...``` block.
+ *
+ * @param {Object} block - A diagram block with block.rendered and block.engine
+ * @param {Object} block.rendered - API response data: { imageUrl, interactiveUrl, canonicalHash, renderHash, diagramId }
+ * @param {string} block.engine - Canonical engine name (e.g. "mermaid")
+ * @returns {string} The full managed block markdown string
+ */
 function makeManagedBlock(block) {
   return [
-    "<!-- syntroper:start -->",
-    `[![Diagram](${block.rendered.imageUrl})](${block.rendered.interactiveUrl})`,
-    "",
-    "Open interactive version on Syntroper.",
-    "Use the Syntroper browser extension for inline interactive mode.",
-    `<!-- syntroper:diagram canonical=${block.rendered.canonicalHash || ""} render=${block.rendered.renderHash || ""} id=${block.rendered.diagramId} engine=${block.engine} -->`,
-    "<!-- syntroper:end -->"
-  ].join("\n");
+    "<!-- syntroper:start -->",                        // Start marker — extension and future re-runs detect this
+    `[![Diagram](${block.rendered.imageUrl})](${block.rendered.interactiveUrl})`,  // Clickable image link
+    "",                                                // Blank line for markdown spacing
+    "Open interactive version on Syntroper.",           // User-facing text (visible on GitHub)
+    "Use the Syntroper browser extension for inline interactive mode.",  // Encourages extension install
+    `<!-- syntroper:diagram canonical=${block.rendered.canonicalHash || ""} render=${block.rendered.renderHash || ""} id=${block.rendered.diagramId} engine=${block.engine} -->`,  // Metadata comment — machine-readable
+    "<!-- syntroper:end -->"                           // End marker — closes the managed block
+  ].join("\n");  // Join all lines with newlines into a single string
 }
 
+/**
+ * rewriteMarkdownFile() — Replace all diagram blocks in a file with managed blocks.
+ *
+ * Strategy:
+ *   1. Re-read the file from disk (same content that was scanned earlier)
+ *   2. Build a Map: original match text → managed block replacement
+ *   3. Run a single-pass regex replace using a callback function
+ *   4. Write the new content back to disk (only if something changed)
+ *
+ * @param {string} filePath - Path to the markdown file (e.g. "README.md")
+ * @param {Array} blocks - Array of block objects from scanFiles(), each with .rendered data
+ * @returns {Promise<boolean>} true if the file was modified, false if no changes
+ */
 async function rewriteMarkdownFile(filePath, blocks) {
+  // Re-read the file from disk. This should be identical to what scanFiles() read,
+  // since nothing modifies the file between scanning and rewriting.
   let content = await fs.readFile(filePath, "utf8");
 
-  // Build a map from originalMatch text → managed block replacement
+  // ── Step 1: Build replacement map ───────────────────────────────────
+  // Key = the exact original match string (e.g. "```mermaid\ngraph TD\n  A-->B\n```")
+  // Value = the managed block that replaces it
+  // Only include blocks that were successfully rendered (block.rendered exists)
   const replacements = new Map();
   for (const block of blocks) {
     if (block.rendered) {
@@ -35432,21 +35711,33 @@ async function rewriteMarkdownFile(filePath, blocks) {
     }
   }
 
+  // If no blocks were rendered (e.g. all API calls failed), don't modify the file
   if (replacements.size === 0) return false;
 
-  // Single-pass replacement using the same regex as scanning.
-  // Using a callback function avoids $-pattern interpretation issues.
+  // ── Step 2: Single-pass regex replacement ───────────────────────────
+  // Reset the regex position counter (same reason as in scan.js — "g" flag remembers position)
   BLOCK_RE.lastIndex = 0;
+
+  // Replace all diagram blocks in one pass using a callback function.
+  // The callback receives the full match string and returns the replacement.
+  // WHY a callback? Two reasons:
+  //   1. Avoids $-pattern bugs: String.replace("old", "new") interprets $1, $&, etc.
+  //      in "new". A callback's return value is used literally — no special patterns.
+  //   2. Single pass: All blocks are replaced at once, so we don't need to worry
+  //      about character positions shifting as earlier blocks change length.
   const newContent = content.replace(BLOCK_RE, (match) => {
+    // If this match is in our replacement map, replace it; otherwise keep it as-is.
+    // (Keeps non-rendered blocks unchanged.)
     return replacements.has(match) ? replacements.get(match) : match;
   });
 
+  // ── Step 3: Write back only if content changed ──────────────────────
   const changed = newContent !== content;
   if (changed) {
-    await fs.writeFile(filePath, newContent, "utf8");
+    await fs.writeFile(filePath, newContent, "utf8");  // Overwrite the file with new content
   }
 
-  return changed;
+  return changed;  // true = file was modified, false = no changes
 }
 
 module.exports = { rewriteMarkdownFile, makeManagedBlock };
@@ -35460,6 +35751,9 @@ module.exports = { rewriteMarkdownFile, makeManagedBlock };
 /**
  * scan.js — Finds markdown files and extracts fenced diagram blocks.
  *
+ * This is the first step in the pipeline: given glob patterns like "README.md"
+ * or "docs/*.md", it finds matching files and extracts all diagram code blocks.
+ *
  * Uses fast-glob to match file patterns, then applies a regex to find
  * fenced code blocks with supported diagram language tags.
  *
@@ -35468,39 +35762,83 @@ module.exports = { rewriteMarkdownFile, makeManagedBlock };
  *
  * Each detected block includes:
  *   - engine:        Canonical engine name (e.g. "puml" → "plantuml")
- *   - source:        Raw diagram source text
- *   - originalMatch: Full matched string (for replacement later)
- *   - start/end:     Character positions in the file
+ *   - source:        Raw diagram source text (content between the fences)
+ *   - originalMatch: Full matched string including fences (for replacement later)
+ *   - start/end:     Character positions in the file (for position-based operations)
+ *
+ * Example: Given this markdown content:
+ *   ## Architecture
+ *   ```mermaid
+ *   graph TD
+ *     A-->B
+ *   ```
+ *
+ * The scanner produces:
+ *   { engine: "mermaid", source: "graph TD\n  A-->B", originalMatch: "```mermaid\n...\n```", start: 20, end: 52 }
+ *
+ * Used by: index.js (to get blocks for processing), markdown-rewrite.js (BLOCK_RE for replacement)
  */
-const fs = __nccwpck_require__(1943);
-const fg = __nccwpck_require__(5648);
-const { FENCE_TAG_MAP } = __nccwpck_require__(4201);
+const fs = __nccwpck_require__(1943);           // Node.js file system (promise-based)
+const fg = __nccwpck_require__(5648);             // Fast file globbing library
+const { FENCE_TAG_MAP } = __nccwpck_require__(4201);  // Maps fence tags to engine names
 
+// ── Build the scanning regex ────────────────────────────────────────────
+// Join all supported fence tags into a regex alternation: "mermaid|plantuml|puml|ditaa|ascii"
 const SUPPORTED_TAGS = Object.keys(FENCE_TAG_MAP).join("|");
+
+// The main regex that finds diagram blocks in markdown files.
+// Pattern breakdown:
+//   ```              — Opening fence (3 backticks)
+//   (mermaid|...)    — Capture group 1: the language tag
+//   \n               — Newline after the language tag
+//   ([\s\S]*?)       — Capture group 2: the diagram source (lazy match = as little as possible)
+//   ```              — Closing fence (3 backticks)
+//   "g" flag         — Global: find ALL matches in the file, not just the first
 const BLOCK_RE = new RegExp("```(" + SUPPORTED_TAGS + ")\\n([\\s\\S]*?)```", "g");
 
+/**
+ * scanFiles() — Scan markdown files for diagram blocks.
+ *
+ * @param {string[]} patterns - Glob patterns like ["README.md", "docs/*.md"]
+ * @returns {Promise<Array<{ path: string, content: string, blocks: Array }>>}
+ *          Array of files that contain at least one diagram block.
+ *          Files with no diagram blocks are excluded from the results.
+ */
 async function scanFiles(patterns) {
+  // Resolve glob patterns to actual file paths on disk.
+  // onlyFiles: true — skip directories. unique: true — no duplicate paths.
   const paths = await fg(patterns, { onlyFiles: true, unique: true });
-  const results = [];
+  const results = [];  // Will hold { path, content, blocks } for each file with diagrams
 
+  // Process each matching file
   for (const path of paths) {
-    const content = await fs.readFile(path, "utf8");
-    const blocks = [];
-    let match;
+    const content = await fs.readFile(path, "utf8");  // Read the entire file as a string
+    const blocks = [];  // Diagram blocks found in this file
+    let match;          // Will hold each regex match result
 
+    // Reset the regex's internal position counter.
+    // IMPORTANT: Since BLOCK_RE has the "g" flag, it remembers where it left off.
+    // We must reset to 0 before each new file, otherwise it would start scanning
+    // from where it stopped in the PREVIOUS file.
     BLOCK_RE.lastIndex = 0;
+
+    // Find all diagram blocks in this file using the regex.
+    // BLOCK_RE.exec() returns null when no more matches are found.
     while ((match = BLOCK_RE.exec(content)) !== null) {
-      const tag = match[1].toLowerCase();
-      const engine = FENCE_TAG_MAP[tag] || tag;
+      const tag = match[1].toLowerCase();       // e.g. "mermaid", "puml", "Mermaid" → "mermaid"
+      const engine = FENCE_TAG_MAP[tag] || tag;  // Normalize: "puml" → "plantuml", "mermaid" → "mermaid"
+
       blocks.push({
-        engine,
-        source: match[2].trimEnd(),
-        originalMatch: match[0],
-        start: match.index,
-        end: match.index + match[0].length
+        engine,                                  // Canonical engine name (e.g. "plantuml")
+        source: match[2].trimEnd(),              // Diagram source text, trailing whitespace removed
+        originalMatch: match[0],                 // Full match including ```mermaid\n...\n``` (used by rewriter)
+        start: match.index,                      // Character position where ```mermaid starts in the file
+        end: match.index + match[0].length       // Character position where ``` ends in the file
       });
     }
 
+    // Only include files that have at least one diagram block.
+    // Files with no diagrams are skipped entirely.
     if (blocks.length > 0) {
       results.push({ path, content, blocks });
     }
@@ -35520,28 +35858,52 @@ module.exports = { scanFiles, BLOCK_RE };
 /**
  * syntroper-api.js — Handles all communication with the Syntroper backend.
  *
- * Sends diagram source code to the Syntroper API for rendering.
- * The API is responsible for rendering all diagram types (mermaid, plantuml,
- * ditaa, ascii) server-side and returning a hosted image URL.
+ * This module is the ONLY place where network requests are made.
+ * It sends diagram source code to the Syntroper API for rendering and
+ * receives back a hosted image URL.
  *
- * Request:
- *   POST <api_url>
- *   Body: { "code": "<diagram source>" }
+ * The action does NOT render diagrams itself — all rendering (mermaid, plantuml,
+ * ditaa, ascii) happens server-side on Syntroper's infrastructure. This keeps
+ * the GitHub Action lightweight (no heavy rendering dependencies).
  *
- * Response:
- *   {
- *     "success": true,
- *     "diagram_id": "...",
- *     "image_url": "https://...png",
- *     "diagram_type": "flowchart",
- *     "title": "My Flow"
- *   }
+ * API CONTRACT:
  *
- * The image_url is what gets embedded in the rewritten markdown.
- * The action does NOT render diagrams itself — Syntroper handles that.
+ *   Request:
+ *     POST {api_url}/v1/diagrams/import
+ *     Headers: { "content-type": "application/json", "authorization": "Bearer <token>" (optional) }
+ *     Body: { "code": "<canonicalized diagram source>" }
+ *
+ *   Success Response (HTTP 200):
+ *     {
+ *       "success": true,
+ *       "diagram_id": "uuid-here",           ← Unique ID for this diagram on Syntroper
+ *       "image_url": "https://s3...png",     ← Hosted image URL (S3 bucket)
+ *       "diagram_type": "flowchart",          ← Detected diagram type
+ *       "title": "My Flow"                    ← Auto-generated title
+ *     }
+ *
+ *   Error Response:
+ *     HTTP 4xx/5xx with error text body
+ *
+ * The image_url from the response is what gets embedded in the rewritten README.
+ * The diagram_id is stored in the HTML metadata comment for the browser extension.
+ *
+ * Used by: index.js (called once for each diagram block)
  */
-const { info } = __nccwpck_require__(5178);
+const { info } = __nccwpck_require__(5178);  // Logging utility
 
+/**
+ * uploadDiagram() — Send a single diagram's source to the Syntroper API.
+ *
+ * @param {Object} params
+ * @param {string} params.apiUrl - Base API URL (e.g. "https://dev-api.syntroper.ai")
+ * @param {string} params.token - Optional auth token (empty string = no auth)
+ * @param {string} params.engine - Diagram engine name (e.g. "mermaid") — logged for debugging
+ * @param {string} params.rawSource - Original raw source (not used in request, kept for reference)
+ * @param {string} params.canonicalSource - Canonicalized source — this is what gets sent to the API
+ * @param {Object} params.hashes - Hash object from hashes.js — used for logging
+ * @returns {Promise<{ diagramId: string, imageUrl: string, interactiveUrl: string }>}
+ */
 async function uploadDiagram({
   apiUrl,
   token,
@@ -35550,36 +35912,57 @@ async function uploadDiagram({
   canonicalSource,
   hashes
 }) {
+  // Log which diagram we're uploading, showing first 12 chars of hash for identification
   info(`Uploading diagram (engine=${engine}, canonical=${hashes.canonicalHash.slice(0, 12)}…)`);
 
-  const headers = { "content-type": "application/json" };
+  // ── Build request headers ─────────────────────────────────────────────
+  const headers = { "content-type": "application/json" };  // Always send JSON
   if (token) {
+    // If an auth token was provided in the workflow inputs, include it.
+    // This allows authenticated access to the API for private/paid features.
     headers["authorization"] = `Bearer ${token}`;
   }
 
+  // ── Build the full API URL ────────────────────────────────────────────
+  // Strip trailing slashes from the base URL to avoid double-slash issues.
+  // e.g. "https://dev-api.syntroper.ai/" + "/v1/..." → "https://dev-api.syntroper.ai/v1/..."
   const url = apiUrl.replace(/\/+$/, "") + "/v1/diagrams/import";
+
+  // ── Make the HTTP POST request ────────────────────────────────────────
+  // Uses Node.js built-in fetch() (available in Node 18+).
+  // We send the CANONICALIZED source, not the raw source, so the API can
+  // match it against previously uploaded diagrams for deduplication.
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ code: canonicalSource })
+    body: JSON.stringify({ code: canonicalSource })  // Only the source code is sent
   });
 
+  // ── Handle HTTP errors ────────────────────────────────────────────────
+  // If the API returns 4xx or 5xx, read the error body and throw.
   if (!response.ok) {
-    const text = await response.text();
+    const text = await response.text();  // Read error message from response body
     throw new Error(`Syntroper API error ${response.status}: ${text}`);
   }
 
+  // ── Parse JSON response ───────────────────────────────────────────────
   const data = await response.json();
 
+  // ── Validate success flag ─────────────────────────────────────────────
+  // The API always returns a "success" boolean. Even on HTTP 200, it might
+  // report success=false for business logic failures.
   if (!data.success) {
     throw new Error(`Syntroper API returned success=false: ${JSON.stringify(data)}`);
   }
 
-  // Map API response fields to what the rest of the action expects
+  // ── Map API response to our internal format ───────────────────────────
+  // The API uses snake_case (diagram_id, image_url), but our action uses camelCase.
+  // interactiveUrl is set to image_url for now — will point to an embed page
+  // once the browser extension's interactive viewer is built.
   return {
-    diagramId: data.diagram_id,
-    imageUrl: data.image_url,
-    interactiveUrl: data.image_url
+    diagramId: data.diagram_id,        // UUID assigned by Syntroper (e.g. "51df3992-ae60-...")
+    imageUrl: data.image_url,          // Hosted image URL on S3 (e.g. "https://snt-dev-media.s3...png")
+    interactiveUrl: data.image_url     // TODO: Will become embed URL for browser extension iframe
   };
 }
 
@@ -35630,84 +36013,136 @@ var __webpack_exports__ = {};
 /**
  * index.js — Main orchestrator for the Syntroper GitHub Action.
  *
- * This is the entrypoint that GitHub Actions runs (via dist/index.js).
- * It wires together all modules in sequence:
- *   1. Read action inputs (token, paths, rewrite_mode, etc.)
- *   2. Scan markdown files for fenced diagram blocks
- *   3. Canonicalize each diagram source (normalize whitespace)
- *   4. Generate canonical + render hashes for identity/caching
- *   5. Upload diagram source to Syntroper API → get back imageUrl
- *   6. Rewrite markdown files with image links + metadata markers
- *   7. Optionally commit and push the changes
+ * This is the ENTRYPOINT that GitHub Actions runs (via dist/index.js).
+ * When a workflow triggers, GitHub does: node dist/index.js → which calls run().
+ *
+ * COMPLETE PIPELINE (in order):
+ *   1. Read action inputs from workflow YAML (api_url, paths, etc.)     → inputs.js
+ *   2. Scan markdown files for fenced diagram blocks (```mermaid...```) → scan.js
+ *   3. For each block:
+ *      a. Canonicalize the source (normalize whitespace)                → canonicalize.js
+ *      b. Generate 3 identity hashes (canonical, render, raw)           → hashes.js
+ *      c. Upload source to Syntroper API → get back image URL           → syntroper-api.js
+ *   4. Rewrite markdown files: replace code blocks with image blocks    → markdown-rewrite.js
+ *   5. Optionally commit and push the changes                           → git.js
+ *
+ * DATA FLOW:
+ *   Workflow YAML → inputs → scanFiles → [canonicalize → hash → upload] per block → rewrite → commit
+ *
+ * ERROR HANDLING:
+ *   Any unhandled error is caught and reported via core.setFailed(),
+ *   which marks the GitHub Actions workflow step as failed (red X in the UI).
+ *
+ * OUTPUTS (available to subsequent workflow steps):
+ *   - changed: "true" or "false" — whether any files were modified
+ *   - diagrams_found: number of diagram blocks found across all files
  */
-const core = __nccwpck_require__(7484);
-const { getInputs } = __nccwpck_require__(1899);
-const { scanFiles } = __nccwpck_require__(9355);
-const { canonicalizeDiagram } = __nccwpck_require__(5922);
-const { makeHashes } = __nccwpck_require__(4770);
-const { uploadDiagram } = __nccwpck_require__(4861);
-const { rewriteMarkdownFile } = __nccwpck_require__(3906);
-const { maybeCommitChanges } = __nccwpck_require__(7556);
-const { info } = __nccwpck_require__(5178);
-const { REWRITE_CHECK_ONLY } = __nccwpck_require__(4201);
+const core = __nccwpck_require__(7484);                              // GitHub Actions toolkit (inputs, outputs, failure reporting)
+const { getInputs } = __nccwpck_require__(1899);                          // Step 1: Read workflow inputs
+const { scanFiles } = __nccwpck_require__(9355);                            // Step 2: Find diagram blocks in markdown
+const { canonicalizeDiagram } = __nccwpck_require__(5922);          // Step 3a: Normalize whitespace
+const { makeHashes } = __nccwpck_require__(4770);                         // Step 3b: Generate identity hashes
+const { uploadDiagram } = __nccwpck_require__(4861);               // Step 3c: Upload to Syntroper API
+const { rewriteMarkdownFile } = __nccwpck_require__(3906);      // Step 4: Replace blocks with images
+const { maybeCommitChanges } = __nccwpck_require__(7556);                    // Step 5: Git commit & push
+const { info } = __nccwpck_require__(5178);                               // Logging utility
+const { REWRITE_CHECK_ONLY } = __nccwpck_require__(4201);              // Constant for check-only mode
 
+/**
+ * run() — Main function. Executes the entire pipeline from start to finish.
+ *
+ * Takes NO parameters — everything comes from GitHub Actions inputs (environment variables).
+ * This function is called once, at the bottom of this file: run();
+ */
 async function run() {
   try {
+    // ── Step 1: Read inputs ───────────────────────────────────────────
+    // Reads api_url, token, paths, rewrite_mode, commit_changes, commit_message
+    // from the workflow YAML "with:" block via GitHub Actions environment variables.
     const inputs = getInputs();
 
+    // ── Step 2: Scan markdown files ───────────────────────────────────
+    // Find all markdown files matching the glob patterns (e.g. "README.md")
+    // and extract fenced diagram blocks (```mermaid, ```plantuml, etc.)
     info(`Scanning patterns: ${inputs.paths.join(", ")}`);
     const files = await scanFiles(inputs.paths);
+    // files = [{ path: "README.md", content: "...", blocks: [{ engine, source, ... }, ...] }]
 
-    let diagramsFound = 0;
-    let changed = false;
+    let diagramsFound = 0;  // Counter: total diagram blocks found across all files
+    let changed = false;     // Flag: whether any file was actually modified
 
+    // ── Step 3: Process each file and its diagram blocks ──────────────
     for (const file of files) {
       info(`Processing ${file.path} (${file.blocks.length} diagram(s))`);
 
+      // Process each diagram block within this file
       for (const block of file.blocks) {
         diagramsFound += 1;
 
+        // Step 3a: Canonicalize — normalize whitespace so formatting-only
+        // edits produce the same hash (see canonicalize.js for details)
         const canonical = canonicalizeDiagram(block.engine, block.source);
+
+        // Step 3b: Hash — generate 3 identity hashes for dedup and caching
+        // renderConfig is currently static; will become configurable later
         const hashes = makeHashes({
           engine: block.engine,
           canonicalSource: canonical,
           renderConfig: { theme: "default", rendererVersion: "1" }
         });
 
+        // Step 3c: Upload — POST the canonical source to Syntroper API
+        // Returns: { diagramId, imageUrl, interactiveUrl }
         const uploaded = await uploadDiagram({
-          apiUrl: inputs.apiUrl,
-          token: inputs.token,
-          engine: block.engine,
-          rawSource: block.source,
-          canonicalSource: canonical,
-          hashes
+          apiUrl: inputs.apiUrl,        // e.g. "https://dev-api.syntroper.ai"
+          token: inputs.token,          // Auth token (or empty string)
+          engine: block.engine,         // e.g. "mermaid"
+          rawSource: block.source,      // Original source (for reference)
+          canonicalSource: canonical,   // Normalized source (sent to API)
+          hashes                        // Hashes (used for logging)
         });
 
+        // Attach the API response + hashes to the block object.
+        // This data is used by markdown-rewrite.js to build the managed block.
         block.rendered = {
-          ...uploaded,
-          canonicalHash: hashes.canonicalHash,
-          renderHash: hashes.renderHash
+          ...uploaded,                          // { diagramId, imageUrl, interactiveUrl }
+          canonicalHash: hashes.canonicalHash,  // For the metadata HTML comment
+          renderHash: hashes.renderHash         // For the metadata HTML comment
         };
       }
 
+      // ── Step 4: Rewrite the markdown file ─────────────────────────────
+      // Replace all ```mermaid blocks with managed blocks (image + metadata).
+      // Skip if mode is "check_only" (upload only, don't modify files).
       if (inputs.rewriteMode !== REWRITE_CHECK_ONLY) {
         const fileChanged = await rewriteMarkdownFile(file.path, file.blocks);
-        changed = changed || fileChanged;
+        changed = changed || fileChanged;  // Track if ANY file was modified
       }
     }
 
+    // ── Step 5: Commit and push (optional) ────────────────────────────
+    // Only commits if: (a) at least one file was modified, AND (b) commit_changes is "true"
     if (changed && inputs.commitChanges) {
       await maybeCommitChanges(inputs.commitMessage);
     }
 
+    // ── Report results ────────────────────────────────────────────────
     info(`Done. Diagrams found: ${diagramsFound}, changed: ${changed}`);
+
+    // Set GitHub Actions outputs — these can be used by subsequent workflow steps.
+    // Example: if: steps.diagrams.outputs.changed == 'true'
     core.setOutput("changed", String(changed));
     core.setOutput("diagrams_found", String(diagramsFound));
   } catch (error) {
+    // If anything fails, mark the workflow step as failed.
+    // This shows a red X in the GitHub Actions UI and stops the workflow.
     core.setFailed(error instanceof Error ? error.message : String(error));
   }
 }
 
+// ── Execute ─────────────────────────────────────────────────────────────
+// This is the actual entrypoint. When GitHub runs "node dist/index.js",
+// this line kicks off the entire pipeline.
 run();
 
 module.exports = __webpack_exports__;
