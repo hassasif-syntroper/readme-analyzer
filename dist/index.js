@@ -35935,7 +35935,12 @@ async function uploadDiagram({
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ code: canonicalSource })  // Only the source code is sent
+    body: JSON.stringify({
+      code: canonicalSource,                    // The canonicalized diagram source
+      canonicalHash: hashes.canonicalHash,       // Primary identity hash for dedup
+      renderHash: hashes.renderHash,             // Asset cache key
+      engine                                     // Diagram engine (e.g. "mermaid")
+    })
   });
 
   // ── Handle HTTP errors ────────────────────────────────────────────────
