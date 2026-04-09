@@ -35936,10 +35936,14 @@ async function uploadDiagram({
     method: "POST",
     headers,
     body: JSON.stringify({
-      code: canonicalSource,                    // The canonicalized diagram source
-      canonicalHash: hashes.canonicalHash,       // Primary identity hash for dedup
-      renderHash: hashes.renderHash,             // Asset cache key
-      engine                                     // Diagram engine (e.g. "mermaid")
+      canonicalSource,                           // The canonicalized diagram source (primary field)
+      code: canonicalSource,                     // Legacy fallback field (backend checks canonicalSource || code)
+      engine,                                    // Diagram engine (e.g. "mermaid")
+      hashes: {                                  // Nested hash object — backend reads hashes?.canonicalHash
+        canonicalHash: hashes.canonicalHash,     // Primary identity hash for dedup
+        renderHash: hashes.renderHash,           // Asset cache key
+        rawSourceHash: hashes.rawSourceHash      // Source provenance hash
+      }
     })
   });
 
