@@ -1,0 +1,74 @@
+/* ── Syntroper Extension Styles ─────────────────────────────────────────
+ * Styles for the interactive diagram container that replaces
+ * static Syntroper images on GitHub README pages.
+ */
+
+/* Container wrapping the iframe — replaces the original image + text */
+.syntroper-interactive {
+  position: relative;
+  width: 100%;
+  min-height: 300px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 8px 0;
+  background: #f6f8fa;
+  transition: border-color 0.2s ease;
+}
+
+.syntroper-interactive:hover {
+  border-color: #0969da;
+}
+
+/* The iframe itself — fills the container */
+.syntroper-interactive iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  border: none;
+  display: block;
+}
+
+/* Loading state shown while iframe loads */
+.syntroper-interactive .syntroper-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: #656d76;
+  background: #f6f8fa;
+  z-index: 1;
+}
+
+/* Hide loading overlay once iframe is ready */
+.syntroper-interactive.syntroper-loaded .syntroper-loading {
+  display: none;
+}
+
+/* Small badge in the corner showing it's a Syntroper embed */
+.syntroper-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  background: #0969da;
+  border-radius: 12px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.syntroper-interactive:hover .syntroper-badge {
+  opacity: 1;
+}
