@@ -5,21 +5,19 @@
  * in README files. It replaces the static diagram image with an interactive
  * iframe embed from Syntroper.
  *
+ * WHY URL-BASED DETECTION:
+ *   GitHub's markdown renderer STRIPS HTML comments from rendered output.
+ *   So <!-- syntroper:start --> and <!-- syntroper:diagram ... --> do NOT
+ *   exist in the DOM. Instead, we detect diagrams by their image URL pattern:
+ *     https://snt-dev-media.s3.ap-southeast-2.amazonaws.com/external-embeds/{UUID}.png
+ *   The UUID in the URL IS the diagram ID.
+ *
  * HOW IT WORKS:
- *   1. Scan the page for HTML comments: <!-- syntroper:start --> ... <!-- syntroper:end -->
- *   2. Parse metadata from <!-- syntroper:diagram canonical=... id=... engine=... -->
- *   3. Replace the static image + text with an interactive iframe
- *   4. Re-scan on GitHub SPA navigation (turbo:load, pjax events)
- *
- * MANAGED BLOCK FORMAT (in the rendered HTML):
- *   GitHub renders the markdown managed block as:
- *     - The <!-- syntroper:start --> and <!-- syntroper:end --> become HTML comment nodes
- *     - The image becomes an <a><img></a> element
- *     - The text lines become <p> elements
- *     - The <!-- syntroper:diagram ... --> becomes an HTML comment node
- *
- *   We walk the DOM between start/end comments, extract the diagram ID,
- *   and replace everything with an iframe.
+ *   1. Find all <img> elements whose src matches the Syntroper S3 URL pattern
+ *   2. Extract the diagram UUID from the URL
+ *   3. Find the parent <a> link and nearby "Syntroper" text paragraphs
+ *   4. Replace the image block with an interactive iframe
+ *   5. Re-scan on GitHub SPA navigation (turbo:load + MutationObserver)
  *
  * EMBED URL:
  *   https://dev-api.syntroper.ai/embed/{diagram_id}
@@ -28,114 +26,114 @@
 (function () {
   "use strict";
 
+  // ── Guard against double-injection ─────────────────────────────────
+  // The background service worker may inject this script into already-open
+  // tabs on install/update, AND the manifest content_scripts entry will
+  // also inject it on new page loads. This flag prevents running twice.
+  if (window.__syntroperLoaded) return;
+  window.__syntroperLoaded = true;
+
   // ── Configuration ───────────────────────────────────────────────────
   const EMBED_BASE_URL = "https://dev-api.syntroper.ai";
   const PROCESSED_ATTR = "data-syntroper-processed";
 
-  /**
-   * parseMetadataComment() — Extract metadata from a syntroper:diagram comment.
-   *
-   * Input:  "syntroper:diagram canonical=abc123 render=def456 id=uuid-here engine=mermaid"
-   * Output: { canonical: "abc123", render: "def456", id: "uuid-here", engine: "mermaid" }
-   *
-   * @param {string} text - The comment text content
-   * @returns {Object|null} Parsed metadata or null if not a syntroper comment
-   */
-  function parseMetadataComment(text) {
-    const trimmed = text.trim();
-    if (!trimmed.startsWith("syntroper:diagram")) return null;
-
-    const metadata = {};
-    // Match key=value pairs (value is everything up to the next space+key= or end of string)
-    const regex = /(\w+)=([\S]+)/g;
-    let match;
-    while ((match = regex.exec(trimmed)) !== null) {
-      metadata[match[1]] = match[2];
-    }
-    return metadata;
-  }
+  // Regex to match Syntroper S3 embed image URLs and extract the UUID
+  // Matches: https://snt-dev-media.s3.ap-southeast-2.amazonaws.com/external-embeds/{UUID}.png
+  const SYNTROPER_IMG_RE = /snt-dev-media\.s3\.ap-southeast-2\.amazonaws\.com\/external-embeds\/([0-9a-f\-]{36})\.png/;
 
   /**
-   * findManagedBlocks() — Scan the DOM for syntroper managed blocks.
+   * findSyntroperImages() — Scan the DOM for Syntroper diagram images.
    *
-   * Walks through all comment nodes in the document looking for
-   * <!-- syntroper:start --> markers. For each one found, collects all
-   * sibling nodes until <!-- syntroper:end --> and extracts metadata.
+   * Looks for <img> elements inside the README/markdown body whose src
+   * matches the Syntroper S3 URL pattern. For each match, collects:
+   *   - The diagram UUID (from the URL)
+   *   - The <a> parent wrapping the image
+   *   - Nearby text nodes/paragraphs mentioning "Syntroper" (to remove)
    *
-   * @returns {Array<{ startComment: Comment, endComment: Comment, innerNodes: Node[], metadata: Object }>}
+   * @returns {Array<{ diagramId: string, anchor: HTMLElement, nodesToRemove: Node[] }>}
    */
-  function findManagedBlocks() {
-    const blocks = [];
+  function findSyntroperImages() {
+    const results = [];
 
-    // TreeWalker is the most efficient way to find comment nodes in the DOM.
-    // NodeFilter.SHOW_COMMENT = only visit comment nodes (skip elements, text, etc.)
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_COMMENT,
-      null
+    // Search inside GitHub's markdown-rendered body
+    const containers = document.querySelectorAll(
+      ".markdown-body, .readme-content, article, .Box-body"
     );
+    console.log("[Syntroper DEBUG] Found containers:", containers.length);
+    if (containers.length === 0) return results;
 
-    let node;
-    while ((node = walker.nextNode())) {
-      const text = node.nodeValue.trim();
+    for (const container of containers) {
+      const images = container.querySelectorAll("img");
+      console.log("[Syntroper DEBUG] Found images in container:", images.length);
 
-      // Look for <!-- syntroper:start -->
-      if (text !== "syntroper:start") continue;
+      for (const img of images) {
+        // Skip already-processed images
+        if (img.getAttribute(PROCESSED_ATTR)) continue;
 
-      const startComment = node;
-      const innerNodes = [];
-      let metadata = null;
-      let endComment = null;
+        // GitHub proxies external images through camo.githubusercontent.com
+        // The original URL is preserved in data-canonical-src attribute.
+        // Also check the parent <a> href which may contain the original URL.
+        const src = img.getAttribute("src") || "";
+        const canonicalSrc = img.getAttribute("data-canonical-src") || "";
+        const parentHref = img.closest("a")?.getAttribute("href") || "";
 
-      // Walk forward through siblings to find the end comment and metadata
-      let sibling = startComment.nextSibling;
-      while (sibling) {
-        if (sibling.nodeType === Node.COMMENT_NODE) {
-          const sibText = sibling.nodeValue.trim();
+        console.log("[Syntroper DEBUG] img src:", src.substring(0, 80));
+        console.log("[Syntroper DEBUG] img data-canonical-src:", canonicalSrc.substring(0, 80));
+        console.log("[Syntroper DEBUG] parent href:", parentHref.substring(0, 80));
 
-          // Found metadata comment: <!-- syntroper:diagram canonical=... id=... -->
-          if (sibText.startsWith("syntroper:diagram")) {
-            metadata = parseMetadataComment(sibText);
-            innerNodes.push(sibling);
-          }
-          // Found end comment: <!-- syntroper:end -->
-          else if (sibText === "syntroper:end") {
-            endComment = sibling;
-            break;
+        const match = SYNTROPER_IMG_RE.exec(canonicalSrc)
+                   || SYNTROPER_IMG_RE.exec(src)
+                   || SYNTROPER_IMG_RE.exec(parentHref);
+        if (!match) continue;
+
+        const diagramId = match[1];
+        img.setAttribute(PROCESSED_ATTR, "true");
+
+        // The image is typically wrapped in <a href="..."><img></a>
+        const anchor = img.closest("a") || img;
+
+        // Collect the anchor/image and nearby Syntroper text paragraphs
+        // GitHub renders the managed block roughly as:
+        //   <p><a><img></a></p>
+        //   <p>Open interactive version on Syntroper.\n
+        //      Use the Syntroper browser extension...</p>
+        const wrapper = anchor.closest("p") || anchor;
+        const nodesToRemove = [wrapper];
+
+        // Look at following siblings for "Syntroper" text paragraphs
+        let next = wrapper.nextElementSibling;
+        while (next) {
+          const text = next.textContent || "";
+          if (text.includes("Syntroper") || text.includes("interactive")) {
+            nodesToRemove.push(next);
+            next = next.nextElementSibling;
           } else {
-            innerNodes.push(sibling);
+            break;
           }
-        } else {
-          innerNodes.push(sibling);
         }
-        sibling = sibling.nextSibling;
-      }
 
-      // Only process if we found both metadata and end marker
-      if (metadata && metadata.id && endComment) {
-        blocks.push({ startComment, endComment, innerNodes, metadata });
+        results.push({ diagramId, anchor: wrapper, nodesToRemove });
       }
     }
 
-    return blocks;
+    return results;
   }
 
   /**
    * createInteractiveEmbed() — Build the interactive iframe container.
    *
    * Creates a div with:
-   *   - A loading indicator
+   *   - A loading indicator (shown until iframe loads)
    *   - An iframe pointing to the Syntroper embed URL
    *   - A Syntroper badge (visible on hover)
    *
-   * @param {Object} metadata - Parsed metadata { id, engine, canonical, render }
+   * @param {string} diagramId - The diagram UUID
    * @returns {HTMLElement} The container div element
    */
-  function createInteractiveEmbed(metadata) {
+  function createInteractiveEmbed(diagramId) {
     const container = document.createElement("div");
     container.className = "syntroper-interactive";
-    container.setAttribute("data-diagram-id", metadata.id);
-    container.setAttribute("data-engine", metadata.engine || "");
+    container.setAttribute("data-diagram-id", diagramId);
 
     // Loading indicator
     const loading = document.createElement("div");
@@ -143,16 +141,16 @@
     loading.textContent = "Loading interactive diagram…";
     container.appendChild(loading);
 
-    // Badge
+    // Badge (appears on hover)
     const badge = document.createElement("div");
     badge.className = "syntroper-badge";
     badge.textContent = "Syntroper";
     container.appendChild(badge);
 
-    // Iframe
+    // Iframe — the actual interactive embed
     const iframe = document.createElement("iframe");
-    iframe.src = `${EMBED_BASE_URL}/embed/${metadata.id}`;
-    iframe.title = `Interactive ${metadata.engine || "diagram"} diagram`;
+    iframe.src = `${EMBED_BASE_URL}/embed/${diagramId}`;
+    iframe.title = "Interactive Syntroper diagram";
     iframe.loading = "lazy";
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups");
     iframe.addEventListener("load", function () {
@@ -164,77 +162,107 @@
   }
 
   /**
-   * processManagedBlocks() — Main function. Find and replace all managed blocks.
+   * processDiagrams() — Main function. Find and replace all Syntroper images.
    *
-   * For each managed block found:
-   *   1. Skip if already processed (avoid double-processing on re-scans)
-   *   2. Create an interactive iframe embed
-   *   3. Remove the original inner nodes (image, text, metadata comment)
-   *   4. Insert the iframe container between start and end comments
+   * For each Syntroper image found:
+   *   1. Create an interactive iframe embed
+   *   2. Insert it before the original image/text block
+   *   3. Remove the original nodes (image, link, text paragraphs)
    */
-  function processManagedBlocks() {
-    const blocks = findManagedBlocks();
+  function processDiagrams() {
+    const diagrams = findSyntroperImages();
 
-    for (const block of blocks) {
-      // Skip already-processed blocks
-      if (block.startComment[PROCESSED_ATTR]) continue;
-      block.startComment[PROCESSED_ATTR] = true;
-
+    for (const { diagramId, anchor, nodesToRemove } of diagrams) {
       // Create the interactive embed
-      const embed = createInteractiveEmbed(block.metadata);
+      const embed = createInteractiveEmbed(diagramId);
 
-      // Remove all original inner nodes (image link, text paragraphs, metadata comment)
-      for (const node of block.innerNodes) {
+      // Insert the iframe before the first node to remove
+      const firstNode = nodesToRemove[0];
+      firstNode.parentNode.insertBefore(embed, firstNode);
+
+      // Remove all original nodes (image wrapper + text paragraphs)
+      for (const node of nodesToRemove) {
         node.parentNode?.removeChild(node);
       }
-
-      // Insert the iframe container right before the end comment
-      block.endComment.parentNode.insertBefore(embed, block.endComment);
     }
 
-    if (blocks.length > 0) {
-      console.log(`[Syntroper] Replaced ${blocks.length} diagram(s) with interactive embeds.`);
+    if (diagrams.length > 0) {
+      console.log(`[Syntroper] Replaced ${diagrams.length} diagram(s) with interactive embeds.`);
     }
   }
 
+  // ── Staggered scans ─────────────────────────────────────────────────
+  // GitHub loads README content asynchronously after SPA navigation.
+  // We schedule multiple scans at different delays to catch late-loading content.
+  const pendingTimers = new Set();
+  function scheduleScan(delayMs) {
+    const id = setTimeout(function () {
+      pendingTimers.delete(id);
+      processDiagrams();
+    }, delayMs || 300);
+    pendingTimers.add(id);
+  }
+
   // ── Initial scan ────────────────────────────────────────────────────
-  // Run once when the page loads
-  processManagedBlocks();
+  processDiagrams();
+  // Staggered re-scans in case README loads after initial paint
+  scheduleScan(500);
+  scheduleScan(1500);
+  scheduleScan(3000);
 
   // ── GitHub SPA navigation handling ──────────────────────────────────
   // GitHub uses Turbo (formerly Turbolinks) for client-side navigation.
-  // When the user clicks a link, the page content changes without a full
-  // page reload, so our content script doesn't re-run. We listen for
-  // Turbo's navigation events and re-scan the page.
+  // Content changes without a full page reload.
 
-  // Turbo (modern GitHub)
-  document.addEventListener("turbo:load", function () {
-    processManagedBlocks();
+  // Turbo events (modern GitHub uses multiple)
+  ["turbo:load", "turbo:render", "turbo:frame-load"].forEach(function (evt) {
+    document.addEventListener(evt, function () {
+      console.log("[Syntroper] Turbo event:", evt);
+      scheduleScan(200);
+      scheduleScan(1000); // second pass for lazy-loaded README
+    });
   });
 
-  // Also observe DOM mutations for dynamically loaded content
-  // (e.g. README tab loaded lazily, file preview, PR description)
+  // URL change detection via polling (catches all navigation types)
+  let lastUrl = location.href;
+  setInterval(function () {
+    if (location.href !== lastUrl) {
+      console.log("[Syntroper] URL changed:", lastUrl, "→", location.href);
+      lastUrl = location.href;
+      scheduleScan(500);
+      scheduleScan(1500);
+      scheduleScan(3000);
+    }
+  }, 500);
+
+  // MutationObserver on document.body — catches ALL dynamic content loading
+  // (README tab, file preview, PR description, etc.)
   const observer = new MutationObserver(function (mutations) {
-    // Only re-scan if new nodes were added (not just attribute changes)
-    let hasNewNodes = false;
+    let hasNewImages = false;
     for (const mutation of mutations) {
-      if (mutation.addedNodes.length > 0) {
-        hasNewNodes = true;
-        break;
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        // Check if the added node or its children contain images
+        if (node.tagName === "IMG" || node.querySelector?.("img")) {
+          hasNewImages = true;
+          break;
+        }
+        // Also trigger if a markdown-body container was added
+        if (node.classList?.contains("markdown-body") || node.querySelector?.(".markdown-body")) {
+          hasNewImages = true;
+          break;
+        }
       }
+      if (hasNewImages) break;
     }
-    if (hasNewNodes) {
-      processManagedBlocks();
+    if (hasNewImages) {
+      console.log("[Syntroper] New images/markdown detected in DOM");
+      scheduleScan(100);
     }
   });
 
-  // Observe the main content area (not the entire body, for performance)
-  const target = document.querySelector("#js-repo-pjax-container") ||
-                 document.querySelector("[data-turbo-body]") ||
-                 document.querySelector("main") ||
-                 document.body;
-
-  observer.observe(target, {
+  // Observe the entire body to catch all dynamic changes
+  observer.observe(document.body, {
     childList: true,
     subtree: true
   });

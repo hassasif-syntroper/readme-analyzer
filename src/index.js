@@ -49,6 +49,30 @@ async function run() {
     // from the workflow YAML "with:" block via GitHub Actions environment variables.
     const inputs = getInputs();
 
+    // ── Step 1.5: Acquire OIDC token ────────────────────────────────
+    // Request a signed JWT from GitHub's OIDC provider with audience "syntroper".
+    // The backend verifies this token cryptographically and checks the repo
+    // is connected via the Syntroper GitHub App. No API keys needed.
+    // Falls back to the static token input if OIDC is unavailable (e.g. local testing).
+    let token = inputs.token;
+    try {
+      const oidcToken = await core.getIDToken("syntroper");
+      if (oidcToken) {
+        info("OIDC token acquired successfully");
+        token = oidcToken;
+      }
+    } catch (oidcError) {
+      if (inputs.token) {
+        info("OIDC unavailable, falling back to static token input");
+      } else {
+        core.warning(
+          "OIDC token request failed and no static token provided. " +
+          "Ensure 'permissions: id-token: write' is set in your workflow. " +
+          `Error: ${oidcError.message}`
+        );
+      }
+    }
+
     // ── Step 2: Scan markdown files ───────────────────────────────────
     // Find all markdown files matching the glob patterns (e.g. "README.md")
     // and extract fenced diagram blocks (```mermaid, ```plantuml, etc.)
@@ -83,7 +107,7 @@ async function run() {
         // Returns: { diagramId, imageUrl, interactiveUrl }
         const uploaded = await uploadDiagram({
           apiUrl: inputs.apiUrl,        // e.g. "https://dev-api.syntroper.ai"
-          token: inputs.token,          // Auth token (or empty string)
+          token,                        // OIDC token (preferred) or static token fallback
           engine: block.engine,         // e.g. "mermaid"
           rawSource: block.source,      // Original source (for reference)
           canonicalSource: canonical,   // Normalized source (sent to API)

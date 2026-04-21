@@ -9,12 +9,18 @@
  * ditaa, ascii) happens server-side on Syntroper's infrastructure. This keeps
  * the GitHub Action lightweight (no heavy rendering dependencies).
  *
+ * AUTHENTICATION:
+ *   Uses GitHub Actions OIDC. The action requests a signed JWT from GitHub
+ *   with audience "syntroper", sent as a Bearer token. The backend verifies
+ *   the JWT cryptographically and checks the repo is connected via the
+ *   Syntroper GitHub App. No API keys or secrets needed.
+ *
  * API CONTRACT:
  *
  *   Request:
  *     POST {api_url}/v1/diagrams/import
- *     Headers: { "content-type": "application/json", "authorization": "Bearer <token>" (optional) }
- *     Body: { "code": "<canonicalized diagram source>" }
+ *     Headers: { "content-type": "application/json", "authorization": "Bearer <oidc-jwt>" }
+ *     Body: { "canonicalSource": "...", "engine": "...", "hashes": { ... } }
  *
  *   Success Response (HTTP 200):
  *     {

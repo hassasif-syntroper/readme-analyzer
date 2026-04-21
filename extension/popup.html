@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      padding: 16px;
+      color: #1f2328;
+      background: #fff;
+    }
+    h1 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #1a7f37;
+      display: inline-block;
+    }
+    p {
+      font-size: 13px;
+      color: #656d76;
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+    .status {
+      font-size: 13px;
+      padding: 8px 12px;
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    .status strong {
+      color: #1f2328;
+    }
+    #count {
+      font-weight: 600;
+      color: #0969da;
+    }
+    .footer {
+      font-size: 11px;
+      color: #8b949e;
+      border-top: 1px solid #d0d7de;
+      padding-top: 8px;
+    }
+    .footer a {
+      color: #0969da;
+      text-decoration: none;
+    }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1><span class="dot"></span> Syntroper Diagrams</h1>
+  <p>Replaces static diagram images on GitHub with interactive embeds.</p>
+  <div class="status">
+    Diagrams on this page: <span id="count">…</span>
+  </div>
+  <div class="footer">
+    <a href="https://syntroper.com" target="_blank">syntroper.com</a>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
