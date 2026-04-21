@@ -20,7 +20,7 @@
  *   5. Re-scan on GitHub SPA navigation (turbo:load + MutationObserver)
  *
  * EMBED URL:
- *   https://dev-api.syntroper.ai/embed/{diagram_id}
+ *   https://dev.syntroper.ai/view/{diagram_id}
  */
 
 (function () {
@@ -34,7 +34,7 @@
   window.__syntroperLoaded = true;
 
   // ── Configuration ───────────────────────────────────────────────────
-  const EMBED_BASE_URL = "https://dev-api.syntroper.ai";
+  const EMBED_BASE_URL = "https://dev.syntroper.ai";
   const PROCESSED_ATTR = "data-syntroper-processed";
 
   // Regex to match Syntroper S3 embed image URLs and extract the UUID
@@ -149,7 +149,7 @@
 
     // Iframe — the actual interactive embed
     const iframe = document.createElement("iframe");
-    iframe.src = `${EMBED_BASE_URL}/embed/${diagramId}`;
+    iframe.src = `${EMBED_BASE_URL}/view/${diagramId}`;
     iframe.title = "Interactive Syntroper diagram";
     iframe.loading = "lazy";
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups");
